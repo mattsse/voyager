@@ -6,75 +6,97 @@ use reqwest::{StatusCode, Url};
 use scraper::Html;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as StdContext, Poll};
 use std::time::Duration;
 
-type Selection<T> = Pin<Box<dyn Future<Output = T>>>;
+type Selection<T> = Pin<Box<dyn Future<Output = Option<T>> + 'static>>;
 
 type HtmlRequest<T> = Pin<Box<dyn Future<Output = Result<Response<T>, reqwest::Error>>>>;
 
-pub struct Collector<T: Selector> {
+pub struct Collector<'a, T: Selector> {
     /// Currently running jobs
-    running_selections: Vec<Selection<T::Output>>,
-    requests: Vec<HtmlRequest<T::UrlContext>>,
-    selector: T,
-    state: State<T::UrlContext>,
+    // requests: Vec<HtmlRequest<T::CrawlContext>>,
+    selector: &'a mut T,
+    state: State<T::CrawlContext>,
     /// Number of concurrent requests
     max: usize,
 }
 
-impl<T: Selector> Collector<T> {
-    pub fn scrape() {}
-}
+// impl<T: Selector2> Collector<T> {
+//     pub fn scrape() {}
+// }
 
-impl<T> Stream for Collector<T>
+impl<'a, T> Stream for Collector<'a, T>
 where
-    T: Selector + Unpin + 'static,
+    T: Selector + Unpin,
     <T as Selector>::Output: Unpin + 'static,
-    <T as Selector>::UrlContext: Unpin + 'static,
+    <T as Selector>::CrawlContext: Unpin + 'static,
 {
     type Item = Result<T::Output, ()>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        // Drain pending selection processes
-        for n in (0..pin.running_selections.len()).rev() {
-            let mut selection = pin.running_selections.swap_remove(n);
-            if let Poll::Ready(res) = selection.poll_unpin(cx) {
-                return Poll::Ready(Some(Ok(res)));
-            }
-            pin.running_selections.push(selection);
-        }
-
-        while pin.requests.len() < pin.max {
-            if let Some(url) = pin.state.pending.pop_front() {
-                pin.requests.push(Box::pin(pin.state.get_html(url)));
-            } else {
-                break;
-            }
-        }
+        // for n in (0..pin.state..len()).rev() {
+        //
+        // }
+        // // Drain pending selection processes
+        // for n in (0..pin.requests.len()).rev() {
+        //     let mut request = pin.requests.swap_remove(n);
+        //     if let Poll::Ready(res) = request.poll_unpin(cx) {
+        //
+        //         if let Some(res) = res {
+        //             return Poll::Ready(Some(Ok(res)));
+        //         }
+        //     }
+        //     pin.running_selections.push(request);
+        // }
+        //
+        // while pin.requests.len() < pin.max {
+        //     if let Some(url) = pin.state.pending.pop_front() {
+        //         pin.requests.push(Box::pin(pin.state.get_html(url)));
+        //     } else {
+        //         break;
+        //     }
+        // }
+        //
+        //
+        //
+        // for n in (0..pin.running_selections.len()).rev() {
+        //     let mut request = pin.requests.swap_remove(n);
+        //     if let Poll::Ready(resp) = request.poll_unpin(cx) {
+        //         let resp = resp.unwrap();
+        //         let doc = resp.html;
+        //         let ctx = Context {
+        //             depth: resp.info.depth,
+        //             request_url: resp.info.url,
+        //             response_status: resp.status,
+        //             response_headers: resp.headers,
+        //             state: &mut pin.state,
+        //             url_context: resp.info.ctx,
+        //         };
+        //         // let req = pin.selector.on_document2(doc, ctx);
+        //         // pin.running_selections.push(req);
+        //     }
+        // }
 
         unimplemented!()
     }
 }
 
-// Handler for a single job
-// pub struct Job<T> {}
-
 pub struct State<T> {
     requests: Vec<HtmlRequest<T>>,
     client: Arc<reqwest::Client>,
-    current_req: (),
-    pending: VecDeque<UrlInfo<T>>,
+    pending: VecDeque<RequestInfo<T>>,
     stats: Stats,
     request_delay: Option<RequestDelay>,
 }
 
 impl<T: 'static + Unpin> State<T> {
-    fn get_html(&self, info: UrlInfo<T>) -> impl Future<Output = reqwest::Result<Response<T>>> {
+    fn get_html(&self, info: RequestInfo<T>) -> impl Future<Output = reqwest::Result<Response<T>>> {
         self.client
             .get(info.url.clone())
             .send()
@@ -95,17 +117,26 @@ impl<T: 'static + Unpin> State<T> {
     }
 }
 
-struct UrlInfo<T> {
+struct RequestInfo<T> {
     ctx: T,
     url: Url,
     depth: usize,
+    kind: ResponseKind,
 }
 
 pub struct Response<T> {
     html: Html,
     status: StatusCode,
     headers: HeaderMap,
-    info: UrlInfo<T>,
+    info: RequestInfo<T>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResponseKind {
+    Text,
+    Html,
+    Json,
+    Bytes,
 }
 
 pub struct Context<'a, T> {
@@ -114,17 +145,13 @@ pub struct Context<'a, T> {
     response_status: StatusCode,
     response_headers: HeaderMap,
     state: &'a mut State<T>,
-    pub url_context: T,
+    pub url_context: Option<T>,
 }
 
 impl<'a, T> Context<'a, T> {
-    pub fn visit_url_with_context(&self, url: Url, ctx: T) {}
-}
+    pub fn visit(&self, url: Url) {}
 
-impl<'a, T: Default> Context<'a, T> {
-    pub fn visit_url(&self, url: Url) {
-        self.visit_url_with_context(url, T::default())
-    }
+    pub fn visit_with_context(&self, url: Url, ctx: T) {}
 }
 
 pub struct UrlValidator {
@@ -165,18 +192,14 @@ pub struct Stats {
     response_count: usize,
 }
 
-#[async_trait(?Send)]
 pub trait Selector {
-    /// The Output type this Selector produces for a response
+    /// The Output type this Selector produces upon scraping
     type Output;
     /// Used to add additional context to an url that should be requested
-    type UrlContext;
+    type CrawlContext;
 
-    async fn on_document(
-        &mut self,
-        doc: Html,
-        ctx: Context<Self::UrlContext>,
-    ) -> Option<Self::Output>;
+    /// Once a html page was retrieved successfully, the selector gets notified.
+    fn on_document(&mut self, doc: Html, ctx: Context<Self::CrawlContext>) -> Option<Self::Output>;
 
     /// This checks whether a submitted url should in fact be requested
     fn is_valid_url(&self, url: &Url) -> bool {
@@ -234,4 +257,11 @@ impl RequestDelay {
     pub fn random_in_range(min: Duration, max: Duration) -> Self {
         RequestDelay::Random { min, max }
     }
+}
+
+#[async_trait]
+pub trait Job {
+    type Output;
+
+    async fn run(&mut self) -> Option<Self::Output>;
 }

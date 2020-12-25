@@ -18,6 +18,8 @@ async-trait = "0.1.42"
 regex = { version = "1.4", optional = true }
 thiserror = "1.0.22"
 rand = "0.8.0"
+fnv = "1.0.7"
+anyhow = "1.0.36"
 
 [features]
 default = ["re"]
