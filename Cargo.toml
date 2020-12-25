@@ -1,12 +1,12 @@
 [package]
-name = "yeehaw"
+name = "voyager"
 version = "0.1.0"
 authors = ["Matthias Seitz <matthias.seitz@outlook.de>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-homepage = "https://github.com/mattsse/yeehaw"
-repository = "https://github.com/mattsse/yeehaw"
+homepage = "https://github.com/mattsse/voyager"
+repository = "https://github.com/mattsse/voyager"
 
 [dependencies]
 html5ever = "0.25"
