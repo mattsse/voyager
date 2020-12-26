@@ -1,6 +1,8 @@
 use crate::UnexpectedStatusError;
 use anyhow::Result;
-use robotstxt::{parse_robotstxt, RobotsParseHandler};
+use reqwest::header::USER_AGENT;
+use robotstxt::matcher::{LongestMatchRobotsMatchStrategy, RobotsMatchStrategy};
+use robotstxt::{get_path_params_query, parse_robotstxt, RobotsParseHandler};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
@@ -14,7 +16,7 @@ pub struct RobotsHandler {
 
 impl RobotsHandler {
     pub async fn from_response(resp: reqwest::Response) -> Result<RobotsData> {
-        let host = resp.url().host_str().unwrap_or("").to_string();
+        let host = resp.url().host_str().unwrap_or("").to_lowercase();
         let status_code = resp.status().as_u16();
 
         if status_code >= 200 && status_code < 300 {
@@ -120,11 +122,11 @@ impl RobotsParseHandler for RobotsHandler {
 
 #[derive(Debug, Clone)]
 pub struct RobotsData {
-    host: String,
-    groups: Vec<Group>,
-    group_agents: HashMap<String, Vec<usize>>,
-    allow_all: bool,
-    disallow_all: bool,
+    pub host: String,
+    pub groups: Vec<Group>,
+    pub group_agents: HashMap<String, Vec<usize>>,
+    pub allow_all: bool,
+    pub disallow_all: bool,
 }
 
 impl RobotsData {
@@ -147,6 +149,44 @@ impl RobotsData {
             disallow_all: true,
         }
     }
+
+    pub fn iter_groups(&self, user_agent: &str) -> Option<impl Iterator<Item = &Group> + '_> {
+        self.group_agents
+            .get(user_agent)
+            .or_else(|| self.group_agents.get("*"))
+            .map(move |groups| groups.iter().copied().map(move |i| &self.groups[i]))
+    }
+
+    /// Validate that the requested url is *NOT* disallowed.
+    pub fn is_not_disallowed(&self, request: &reqwest::Request) -> bool {
+        if self.disallow_all {
+            return false;
+        }
+        if self.allow_all {
+            return true;
+        }
+
+        let path = get_path_params_query(request.url().path());
+
+        let agent = request
+            .headers()
+            .get(USER_AGENT)
+            .and_then(|agent| agent.to_str().ok())
+            .unwrap_or("*");
+
+        self.group_agents
+            .get(agent)
+            .map(|groups| {
+                groups
+                    .iter()
+                    .copied()
+                    .map(|i| &self.groups[i])
+                    .flat_map(|g| g.rules.iter())
+                    .filter(|rule| rule.is_disallow())
+                    .any(|rule| LongestMatchRobotsMatchStrategy::matches(&path, &rule.pattern))
+            })
+            .unwrap_or(true)
+    }
 }
 
 impl PartialEq for RobotsData {
@@ -163,6 +203,12 @@ impl Hash for RobotsData {
     }
 }
 
+impl std::borrow::Borrow<str> for RobotsData {
+    fn borrow(&self) -> &str {
+        &self.host
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Group {
     /// See [Non standard extension](http://en.wikipedia.org/wiki/Robots_exclusion_standard#Nonstandard_extensions)
@@ -173,7 +219,7 @@ pub struct Group {
 
 #[derive(Debug, Clone)]
 pub struct Rule {
-    path: String,
+    pattern: String,
     allow: bool,
 }
 
@@ -186,27 +232,24 @@ impl Rule {
         !self.allow
     }
 
-    pub fn allow(path: impl Into<String>) -> Self {
+    pub fn allow(pattern: impl Into<String>) -> Self {
         Self {
-            path: path.into(),
+            pattern: pattern.into(),
             allow: true,
         }
     }
     pub fn disallow(path: impl Into<String>) -> Self {
         Self {
-            path: path.into(),
+            pattern: path.into(),
             allow: false,
         }
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
-    fn parse_robots() {
-        
-    }
+    fn parse_robots() {}
 }
