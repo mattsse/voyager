@@ -31,9 +31,11 @@ pub struct Collector<T: Scraper> {
 
 impl<T: Scraper> Collector<T> {
     /// Create a new `Collector` that uses the `scraper` for content extraction
-    pub fn new(scraper: T, config: CollectorConfig) -> Result<Self> {
-        // do all head requests etc
-        todo!()
+    pub fn new(scraper: T, config: CollectorConfig) -> Self {
+        Self {
+            crawler: Crawler::new(config),
+            scraper,
+        }
     }
 
     /// The scraper of this collector
@@ -81,11 +83,14 @@ where
                     CrawlResult::Crawled(Ok(response)) => {
                         // make sure the crawler knows the depth
                         pin.crawler.current_depth = response.depth;
-
                         pin.crawler.stats.response_count =
                             pin.crawler.stats.response_count.wrapping_add(1);
 
-                        match pin.scraper.scrape(response, &mut pin.crawler) {
+                        let output = pin.scraper.scrape(response, &mut pin.crawler);
+
+                        pin.crawler.current_depth = 0;
+
+                        match output {
                             Ok(Some(output)) => return Poll::Ready(Some(Ok(output))),
                             Err(err) => return Poll::Ready(Some(Err(err))),
                             _ => {}
@@ -142,7 +147,7 @@ pub struct Crawler<T: Scraper> {
     /// Stats about requests
     stats: Stats,
     /// Number of concurrent requests
-    max_request: usize,
+    max_requests: usize,
     /// The maximum depth request are allowed to next
     max_depth: usize,
     /// Respect any restrictions set by the target host's robots.txt file
@@ -150,6 +155,52 @@ pub struct Crawler<T: Scraper> {
     /// Whether to ignore responses with a non 2xx response code see
     /// `reqwest::Response::is_success`
     skip_non_successful_responses: bool,
+}
+
+impl<T: Scraper> Crawler<T> {
+    pub fn new(config: CollectorConfig) -> Self {
+        let client = config
+            .client
+            .unwrap_or_else(|| Arc::new(Default::default()));
+
+        let mut allowed_domains = HashMap::with_capacity(config.allowed_domains.len());
+        let mut allowed_domains_keys = Vec::with_capacity(config.allowed_domains.len());
+
+        for (domain, delay) in config.allowed_domains {
+            allowed_domains_keys.push(domain.clone());
+            allowed_domains.insert(
+                domain,
+                DomainRequestQueue {
+                    is_waiting_for_robots: false,
+                    in_progress_queue: Default::default(),
+                    latest_requested: None,
+                    delay,
+                },
+            );
+        }
+
+        Self {
+            queued_results: Default::default(),
+            in_progress_crawl_requests: Default::default(),
+            in_progress_complete_requests: Default::default(),
+            in_progress_robots_txt_crawls: Default::default(),
+            request_queue: Default::default(),
+            buffered_until_robots: Default::default(),
+            client,
+            allowed_domains,
+            allowed_domains_keys,
+            disallowed_domains: config.disallowed_domains,
+            robots_map: Default::default(),
+            in_progress_robots_txt_crawl_hosts: Default::default(),
+            current_depth: 0,
+            request_delay: None,
+            stats: Default::default(),
+            max_requests: config.max_depth.unwrap_or(usize::MAX),
+            max_depth: config.max_depth.unwrap_or(usize::MAX),
+            respect_robots_txt: config.respect_robots_txt,
+            skip_non_successful_responses: config.skip_non_successful_responses,
+        }
+    }
 }
 
 impl<T> Crawler<T>
@@ -533,7 +584,7 @@ where
                 let domain_id = self.allowed_domains_keys.swap_remove(n);
                 if let Some((key, mut domain)) = self.allowed_domains.remove_entry(&domain_id) {
                     if !domain.is_waiting_for_robots {
-                        while self.in_progress_crawl_requests.len() < self.max_request {
+                        while self.in_progress_crawl_requests.len() < self.max_requests {
                             let now = Instant::now();
                             if let Some(req) = domain.poll(now) {
                                 self.execute_buffered_request(req, None, cx);
@@ -549,7 +600,7 @@ where
             }
 
             // queue in pending request
-            while self.in_progress_crawl_requests.len() < self.max_request {
+            while self.in_progress_crawl_requests.len() < self.max_requests {
                 let now = Instant::now();
 
                 if let Some(QueuedRequest {
@@ -780,14 +831,22 @@ pub struct Stats {
 pub struct CollectorConfig {
     /// Limits the recursion depth of visited URLs.
     max_depth: Option<usize>,
+    /// Limits request to execute concurrently.
+    max_requests: Option<usize>,
     /// Whether to ignore responses with a non 2xx response code see
     /// `reqwest::Response::is_success`
     skip_non_successful_responses: bool,
+    /// Domain whitelist, if empty any domains are allowed to visit
+    allowed_domains: HashMap<String, Option<RequestDelay>>,
+    /// Domain blacklist
+    disallowed_domains: HashSet<String>,
     /// respects the any restrictions set by the target host's
     /// robots.txt file. See (http://www.robotstxt.org/)[http://www.robotstxt.org/] for more information.
     respect_robots_txt: bool,
     /// Delay a request
     request_delay: Option<RequestDelay>,
+
+    client: Option<Arc<reqwest::Client>>,
 }
 
 /// How to delay a request
