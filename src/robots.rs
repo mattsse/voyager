@@ -23,7 +23,7 @@ impl RobotsHandler {
         let host = resp.url().host_str().unwrap_or("").to_lowercase();
         let status_code = resp.status().as_u16();
 
-        if status_code >= 200 && status_code < 300 {
+        if (200..300).contains(&status_code) {
             let txt = resp.text().await?;
             let mut handler = RobotsHandler::default();
             parse_robotstxt(&txt, &mut handler);
@@ -36,14 +36,14 @@ impl RobotsHandler {
         // robots.txt file exists. It is assumed that there are no restrictions.
         // This is a "full allow" for crawling. Note: this includes 401
         // "Unauthorized" and 403 "Forbidden" HTTP result codes.
-        if status_code >= 400 && status_code < 500 {
+        if (400..500).contains(&status_code) {
             return Ok(RobotsData::allow_all(host));
         }
 
         // From Google's spec:
         // Server errors (5xx) are seen as temporary errors that result in a "full
         // disallow" of crawling.
-        if status_code >= 500 && status_code < 600 {
+        if (500..600).contains(&status_code) {
             return Ok(RobotsData::disallow_all(host));
         }
 
@@ -64,7 +64,9 @@ impl RobotsHandler {
             HashMap::with_capacity(self.groups.iter().map(|(a, _)| a.len()).sum());
         for (idx, (agents, group)) in self.groups.into_iter().enumerate() {
             for agent in agents {
-                let agent_groups = group_agents.entry(agent).or_insert(Vec::with_capacity(1));
+                let agent_groups = group_agents
+                    .entry(agent)
+                    .or_insert_with(|| Vec::with_capacity(1));
                 agent_groups.push(idx);
             }
             groups.push(group)
@@ -270,7 +272,6 @@ impl Rule {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn parse_robots() {}

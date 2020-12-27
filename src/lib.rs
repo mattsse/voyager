@@ -107,6 +107,10 @@ where
 
 type CrawlRequest<T> = Pin<Box<dyn Future<Output = Result<Response<T>>>>>;
 
+type OutputRequest<T> = Pin<Box<dyn Future<Output = Result<Option<T>>>>>;
+
+type RobotsTxtRequest = Pin<Box<dyn Future<Output = Result<RobotsData, String>>>>;
+
 /// The crawler that is responsible for driving the requests to completion and
 /// providing the crawl response for the `Scraper`.
 pub struct Crawler<T: Scraper> {
@@ -120,9 +124,9 @@ pub struct Crawler<T: Scraper> {
     in_progress_crawl_requests: Vec<CrawlRequest<T::State>>,
     /// Futures that eventually result in `T::Output` and are piped directly to
     /// caller
-    in_progress_complete_requests: Vec<Pin<Box<dyn Future<Output = Result<Option<T::Output>>>>>>,
+    in_progress_complete_requests: Vec<OutputRequest<T::Output>>,
     /// stores the futures that request the robots txt for a host
-    in_progress_robots_txt_crawls: Vec<Pin<Box<dyn Future<Output = Result<RobotsData, String>>>>>,
+    in_progress_robots_txt_crawls: Vec<RobotsTxtRequest>,
     /// Requests that are currently waiting to be executed
     request_queue: VecDeque<QueuedRequest<T::State>>,
     /// Buffer for requests that wait until robots txt is finished
@@ -640,8 +644,8 @@ where
                                 // apply urlfilter
                                 self.queued_results.push_back(CrawlResult::Crawled(Err(
                                     CrawlError::DisallowedRequest {
-                                        request: request,
-                                        state: state,
+                                        request,
+                                        state,
                                         reason: DisallowReason::User,
                                     }
                                     .into(),
