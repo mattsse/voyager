@@ -79,7 +79,9 @@ where
                     CrawlResult::Finished(Ok(output)) => return Poll::Ready(Some(Ok(output))),
                     CrawlResult::Finished(Err(err)) => return Poll::Ready(Some(Err(err))),
                     CrawlResult::Crawled(Ok(response)) => {
-                        // TODO set depth
+                        // make sure the crawler knows the depth
+                        pin.crawler.current_depth = response.depth;
+
                         match pin.scraper.scrape(response, &mut pin.crawler) {
                             Ok(Some(output)) => return Poll::Ready(Some(Ok(output))),
                             Err(err) => return Poll::Ready(Some(Err(err))),
@@ -138,6 +140,8 @@ pub struct Crawler<T: Scraper> {
     stats: Stats,
     /// Number of concurrent requests
     max_request: usize,
+    /// The maximum depth request are allowed to next
+    max_depth: usize,
     /// Respect any restrictions set by the target host's robots.txt file
     respect_robots_txt: bool,
 }
@@ -155,7 +159,7 @@ where
         TCrawlFunction: FnOnce(Arc<reqwest::Client>) -> TCrawlFuture,
         TCrawlFuture: Future<Output = Result<(reqwest::Response, Option<T::State>)>> + 'static,
     {
-        let depth = self.current_depth;
+        let depth = self.current_depth + 1;
         let fut = (fun)(Arc::clone(&self.client));
         let fut = Box::pin(async move {
             let (mut resp, state) = fut.await?;
@@ -469,6 +473,19 @@ where
                     depth,
                 }) = self.request_queue.pop_front()
                 {
+                    // check that we did not reach max depth
+                    if depth > self.max_depth {
+                        self.queued_results.push_back(CrawlResult::Crawled(Err(
+                            CrawlError::ReachedMaxDepth {
+                                request,
+                                state,
+                                depth,
+                            }
+                            .into(),
+                        )));
+                        continue;
+                    }
+
                     match request.build() {
                         Ok(request) => {
                             let req = BufferedRequest {
@@ -815,6 +832,12 @@ pub enum CrawlError<T: fmt::Debug> {
         request: reqwest::Request,
         state: Option<T>,
     },
+    #[error("Reached max depth at {} while carrying state: {:?}", .depth ,.state)]
+    ReachedMaxDepth {
+        request: reqwest::RequestBuilder,
+        state: Option<T>,
+        depth: usize,
+    },
     #[error("Failed to fetch robots.txt from {}", .host)]
     RobotsTxtError { host: String },
     #[error("Rejected a request, because its url is disallowed due to {:?}, while carrying state: {:?}", .reason, .state)]
@@ -823,6 +846,32 @@ pub enum CrawlError<T: fmt::Debug> {
         request: reqwest::Request,
         state: Option<T>,
     },
+}
+
+impl<T> CrawlError<T> {
+    /// Get the state this error is carrying
+    pub fn state(&self) -> Option<&T> {
+        match self {
+            CrawlError::NoSuccessResponse { state, .. } => state.as_ref(),
+            CrawlError::FailedToBuildRequest { state, .. } => state.as_ref(),
+            CrawlError::InvalidRequest { state, .. } => state.as_ref(),
+            CrawlError::ReachedMaxDepth { state, .. } => state.as_ref(),
+            CrawlError::RobotsTxtError { .. } => None,
+            CrawlError::DisallowedRequest { state, .. } => state.as_ref(),
+        }
+    }
+
+    /// Recover the state this error may carrying
+    pub fn state_mut(&mut self) -> &mut Option<T> {
+        match self {
+            CrawlError::NoSuccessResponse { state, .. } => state,
+            CrawlError::FailedToBuildRequest { state, .. } => state,
+            CrawlError::InvalidRequest { state, .. } => state,
+            CrawlError::ReachedMaxDepth { state, .. } => state,
+            CrawlError::RobotsTxtError { .. } => None,
+            CrawlError::DisallowedRequest { state, .. } => state,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
