@@ -7,10 +7,14 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
+/// The handler that parses the `robots.txt` into a `RobotsData`
 #[derive(Debug, Clone, Default)]
 pub struct RobotsHandler {
+    // list of groups with all their user_agents
     groups: Vec<(HashSet<String>, Group)>,
+    /// the current group that is processed
     group: Option<Group>,
+    /// the list of agents for the current group that is currently processed
     agents: Option<HashSet<String>>,
 }
 
@@ -42,6 +46,8 @@ impl RobotsHandler {
         if status_code >= 500 && status_code < 600 {
             return Ok(RobotsData::disallow_all(host));
         }
+
+        // status code not recognized
         Err(UnexpectedStatusError::new(status_code).into())
     }
 
@@ -120,16 +126,23 @@ impl RobotsParseHandler for RobotsHandler {
     }
 }
 
+/// Represents a `robots.txt` file
 #[derive(Debug, Clone)]
 pub struct RobotsData {
+    /// The host from where this data was fetched
     pub host: String,
+    /// All the groups in the `robots.txt`
     pub groups: Vec<Group>,
+    /// Mapping of all user-agents to all their groups
     pub group_agents: HashMap<String, Vec<usize>>,
+    /// Whether to allow all url patterns for all user agents
     pub allow_all: bool,
+    /// disallow all url patterns for all user agents
     pub disallow_all: bool,
 }
 
 impl RobotsData {
+    /// All patterns for all agents are allowed
     pub fn allow_all(host: impl Into<String>) -> Self {
         Self {
             host: host.into(),
@@ -140,6 +153,7 @@ impl RobotsData {
         }
     }
 
+    /// All patterns for all agents are disallowed
     pub fn disallow_all(host: impl Into<String>) -> Self {
         Self {
             host: host.into(),
@@ -150,14 +164,9 @@ impl RobotsData {
         }
     }
 
-    pub fn iter_groups(&self, user_agent: &str) -> Option<impl Iterator<Item = &Group> + '_> {
-        self.group_agents
-            .get(user_agent)
-            .or_else(|| self.group_agents.get("*"))
-            .map(move |groups| groups.iter().copied().map(move |i| &self.groups[i]))
-    }
-
     /// Validate that the requested url is *NOT* disallowed.
+    ///
+    /// This does *NOT* mean that it is explicitly allowed
     pub fn is_not_disallowed(&self, request: &reqwest::Request) -> bool {
         if self.disallow_all {
             return false;
@@ -168,12 +177,15 @@ impl RobotsData {
 
         let path = get_path_params_query(request.url().path());
 
+        // if the requests user-agent is not contained in the robots agent list, use the
+        // wildcard instead
         let agent = request
             .headers()
             .get(USER_AGENT)
             .and_then(|agent| agent.to_str().ok())
             .unwrap_or("*");
 
+        // check all the rules that explicitly disallow access for the user agent
         self.group_agents
             .get(agent)
             .map(|groups| {
@@ -209,35 +221,45 @@ impl std::borrow::Borrow<str> for RobotsData {
     }
 }
 
+/// A Set of rules for a list of user-agents
 #[derive(Debug, Clone, Default)]
 pub struct Group {
     /// See [Non standard extension](http://en.wikipedia.org/wiki/Robots_exclusion_standard#Nonstandard_extensions)
     /// Interpreted as seconds
     crawl_delay: Option<Duration>,
+    /// applied
     rules: Vec<Rule>,
 }
 
+/// A rule that either allows or disallows an url pattern
 #[derive(Debug, Clone)]
 pub struct Rule {
+    /// The url pattern like `/`
     pattern: String,
+    /// Whether the `pattern` is allowed or disallowed
     allow: bool,
 }
 
 impl Rule {
+    /// Whether the pattern allows accessing the url
     pub fn is_allow(&self) -> bool {
         self.allow
     }
 
+    /// Whether the pattern disallows accessing the url
     pub fn is_disallow(&self) -> bool {
         !self.allow
     }
 
+    /// Create a new rule to allow this `pattern`
     pub fn allow(pattern: impl Into<String>) -> Self {
         Self {
             pattern: pattern.into(),
             allow: true,
         }
     }
+
+    /// Create a new rule to disallow this `pattern`
     pub fn disallow(path: impl Into<String>) -> Self {
         Self {
             pattern: path.into(),

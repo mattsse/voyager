@@ -14,35 +14,49 @@ use std::task::{Context as StdContext, Poll};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+/// Contains the robots txt types
 pub mod robots;
+/// Reexport all the scraper types
+pub use scraper;
 
+/// Collector controls the `Crawler` and forwards the successful requests to the
+/// `Scraper`.
+#[must_use = "Collector does nothing until polled."]
 pub struct Collector<T: Scraper> {
+    /// The crawler that requests all the pages
     crawler: Crawler<T>,
+    /// The scraper that extracts the information from a `Response`
     pub scraper: T,
 }
 
 impl<T: Scraper> Collector<T> {
-    pub async fn new(scraper: T, config: CollectorConfig) -> Result<Self> {
+    /// Create a new `Collector` that uses the `scraper` for content extraction
+    pub fn new(scraper: T, config: CollectorConfig) -> Result<Self> {
         // do all head requests etc
         todo!()
     }
 
+    /// The scraper of this collector
     pub fn scraper(&self) -> &T {
         &self.scraper
     }
 
+    /// Mutable access to the inner scraper
     pub fn scraper_mut(&mut self) -> &mut T {
         &mut self.scraper
     }
 
+    /// The crawler that handles the requests
     pub fn crawler(&self) -> &Crawler<T> {
         &self.crawler
     }
 
+    /// Mutable access to the crawler that handles the requests
     pub fn crawler_mut(&mut self) -> &mut Crawler<T> {
         &mut self.crawler
     }
 
+    /// Stats about the executed requests
     pub fn stats(&self) -> &Stats {
         &self.crawler.stats
     }
@@ -56,22 +70,28 @@ where
 {
     type Item = Result<T::Output>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
-        let r: Response<T::State> = Response {
-            depth: 0,
-            request_url: "".parse().unwrap(),
-            response_url: "".parse().unwrap(),
-            response_status: Default::default(),
-            response_headers: Default::default(),
-            text: "".to_string(),
-            state: None,
-        };
-
-        // pin.scraper.scrape(r, &mut pin.crawler);
-
-        Poll::Pending
+        loop {
+            match pin.crawler.poll(cx) {
+                Poll::Ready(Some(result)) => match result {
+                    CrawlResult::Finished(Ok(output)) => return Poll::Ready(Some(Ok(output))),
+                    CrawlResult::Finished(Err(err)) => return Poll::Ready(Some(Err(err))),
+                    CrawlResult::Crawled(Ok(response)) => {
+                        // TODO set depth
+                        match pin.scraper.scrape(response, &mut pin.crawler) {
+                            Ok(Some(output)) => return Poll::Ready(Some(Ok(output))),
+                            Err(err) => return Poll::Ready(Some(Err(err))),
+                            _ => {}
+                        }
+                    }
+                    CrawlResult::Crawled(Err(err)) => return Poll::Ready(Some(Err(err))),
+                },
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 }
 
@@ -84,7 +104,7 @@ pub struct Crawler<T: Scraper> {
     ///
     /// polling them all consecutively and buffering all the results prevents
     /// bias
-    queued_results: VecDeque<CrawlEvent<T>>,
+    queued_results: VecDeque<CrawlResult<T>>,
     /// Futures that eventually return a http response that is passed to the
     /// scraper
     in_progress_crawl_requests: Vec<CrawlRequest<T::State>>,
@@ -141,7 +161,6 @@ where
             let (mut resp, state) = fut.await?;
             let (status, url, headers) = response_info(&mut resp);
             let text = resp.text().await?;
-            let html = Html::parse_document(&text);
 
             Ok(Response {
                 depth,
@@ -228,6 +247,54 @@ where
         self.request_delay().map(|d| d.delay())
     }
 
+    fn get_response(
+        &self,
+        request: reqwest::Request,
+        state: Option<T::State>,
+    ) -> CrawlRequest<T::State> {
+        let depth = self.current_depth + 1;
+        let request_url = request.url().clone();
+
+        let request = self.client.execute(request);
+
+        Box::pin(async move {
+            let mut resp = request.await?;
+            let (status, url, headers) = response_info(&mut resp);
+            let text = resp.text().await?;
+
+            Ok(Response {
+                depth,
+                request_url,
+                response_url: url,
+                response_status: status,
+                response_headers: headers,
+                text,
+                state,
+            })
+        })
+    }
+
+    /// Create a future that executes the request
+    ///
+    /// If a delay was set, the request will wait for
+    fn execute_request(
+        &self,
+        request: reqwest::Request,
+        state: Option<T::State>,
+        delay: Option<Duration>,
+    ) -> CrawlRequest<T::State> {
+        let request = self.get_response(request, state);
+
+        if let Some(delay) = delay {
+            Box::pin(async move {
+                futures_timer::Delay::new(delay).await;
+                Ok(request.await?)
+            })
+        } else {
+            request
+        }
+    }
+
     /// queue in a request to fetch the robots txt from the url's host
     fn get_robots_txt(&mut self, mut url: Url, host: String) {
         self.in_progress_robots_txt_crawl_hosts.insert(host.clone());
@@ -244,122 +311,200 @@ where
         self.in_progress_robots_txt_crawls.push(Box::pin(fut));
     }
 
-    fn poll(&mut self, cx: &mut StdContext<'_>, now: Instant) -> Poll<Option<CrawlEvent<T>>> {
-        // drain all queued results first
-        if let Some(result) = self.queued_results.pop_front() {
-            return Poll::Ready(Some(result));
-        }
-
-        // drain submitted futures by removing them one by one and add them back if not
-        // ready
-        for n in (0..self.in_progress_complete_requests.len()).rev() {
-            let mut request = self.in_progress_complete_requests.swap_remove(n);
-            if let Poll::Ready(resp) = request.poll_unpin(cx) {
-                match resp {
-                    Ok(Some(output)) => {
-                        self.queued_results
-                            .push_back(CrawlEvent::Finished(Ok(output)));
-                    }
-                    Err(err) => {
-                        self.queued_results
-                            .push_back(CrawlEvent::Finished(Err(err)));
-                    }
-                    _ => {}
+    fn handle_not_whitelisted_and_not_blacklisted(
+        &mut self,
+        request: Request,
+        state: Option<T::State>,
+        host: String,
+    ) -> Option<(reqwest::Request, Option<T::State>, Option<Duration>)> {
+        let mut next_request = None;
+        if self.respect_robots_txt {
+            if let Some(robots) = self.robots_map.get(host.as_str()) {
+                if robots.is_not_disallowed(&request) {
+                    // not explicitly disallowed
+                    next_request = Some((request, state, self.request_delay().map(|d| d.delay())))
+                } else {
+                    self.queued_results.push_back(CrawlResult::Crawled(Err(
+                        CrawlError::DisallowedRequest {
+                            request,
+                            state,
+                            reason: DisallowReason::RobotsTxt,
+                        }
+                        .into(),
+                    )));
                 }
+            } else if self.in_progress_robots_txt_crawl_hosts.contains(&host) {
+                self.buffered_until_robots.push_back((request, state));
             } else {
-                self.in_progress_complete_requests.push(request);
+                // robots txt not requested yet for this
+                // request's host
+                self.get_robots_txt(request.url().clone(), host);
+                self.buffered_until_robots.push_back((request, state));
             }
+        } else {
+            next_request = Some((request, state, self.request_delay().map(|d| d.delay())))
+        }
+        next_request
+    }
+
+    fn handle_request_for_whitelisted_domain(
+        &mut self,
+        mut domain: DomainDelay<T::State>,
+        request: Request,
+        state: Option<T::State>,
+        key: String,
+        host: String,
+        now: Instant,
+    ) -> Option<(reqwest::Request, Option<T::State>, Option<Duration>)> {
+        let mut next_request = None;
+        // the domain is whitelisted
+        if self.respect_robots_txt {
+            // check if robots txt was already fetched, or fetching is in
+            // progress
+            if let Some(robots) = self.robots_map.get(host.as_str()) {
+                if robots.is_not_disallowed(&request) {
+                    // not explicitly disallowed
+                    next_request = Some(domain.queue_or_pop_front(request, state, now));
+                } else {
+                    self.queued_results.push_back(CrawlResult::Crawled(Err(
+                        CrawlError::DisallowedRequest {
+                            request,
+                            state,
+                            reason: DisallowReason::RobotsTxt,
+                        }
+                        .into(),
+                    )));
+                }
+            } else if self.in_progress_robots_txt_crawl_hosts.contains(&host) {
+                // robots txt request currently in progress
+                domain.queue_mut().push_back((request, state));
+            } else {
+                // robots txt not requested yet for this
+                // request's host
+                self.get_robots_txt(request.url().clone(), host);
+                domain.queue_mut().push_back((request, state));
+            }
+        } else {
+            next_request = Some(domain.queue_or_pop_front(request, state, now));
         }
 
-        // drain the crawl futures by removing them one by one and add them back if not
-        // ready
-        for n in (0..self.in_progress_crawl_requests.len()).rev() {
-            let mut request = self.in_progress_crawl_requests.swap_remove(n);
-            if let Poll::Ready(resp) = request.poll_unpin(cx) {
-                self.queued_results.push_back(CrawlEvent::Crawled(resp));
-            }
-            self.in_progress_crawl_requests.push(request);
+        // The `next_request` will be send immediately, so we track the timestamp to
+        // delay any further requests to this domain
+        if next_request.is_some() {
+            domain.set_requested_timestamp(now);
         }
 
-        // drain all in progress robots.txt lookups
-        for n in (0..self.in_progress_robots_txt_crawls.len()).rev() {
-            let mut request = self.in_progress_robots_txt_crawls.swap_remove(n);
-            if let Poll::Ready(resp) = request.poll_unpin(cx) {
-                match resp {
-                    Ok(robots) => {
-                        self.in_progress_robots_txt_crawl_hosts.remove(&robots.host);
-                        self.robots_map.insert(robots);
+        self.allowed_domains.insert(key, domain);
+        next_request
+    }
+
+    /// advance all requests
+    fn poll(&mut self, cx: &mut StdContext<'_>) -> Poll<Option<CrawlResult<T>>> {
+        loop {
+            // drain all queued results first
+            if let Some(result) = self.queued_results.pop_front() {
+                return Poll::Ready(Some(result));
+            }
+
+            // drain submitted futures by removing them one by one and add them back if not
+            // ready
+            for n in (0..self.in_progress_complete_requests.len()).rev() {
+                let mut request = self.in_progress_complete_requests.swap_remove(n);
+                if let Poll::Ready(resp) = request.poll_unpin(cx) {
+                    match resp {
+                        Ok(Some(output)) => {
+                            self.queued_results
+                                .push_back(CrawlResult::Finished(Ok(output)));
+                        }
+                        Err(err) => {
+                            self.queued_results
+                                .push_back(CrawlResult::Finished(Err(err)));
+                        }
+                        _ => {}
                     }
-                    Err(host) => {
-                        self.in_progress_robots_txt_crawl_hosts.remove(&host);
-                        self.queued_results
-                            .push_back(CrawlEvent::Crawled(Err(
+                } else {
+                    self.in_progress_complete_requests.push(request);
+                }
+            }
+
+            // drain the crawl futures by removing them one by one and add them back if not
+            // ready
+            for n in (0..self.in_progress_crawl_requests.len()).rev() {
+                let mut request = self.in_progress_crawl_requests.swap_remove(n);
+                if let Poll::Ready(resp) = request.poll_unpin(cx) {
+                    self.queued_results.push_back(CrawlResult::Crawled(resp));
+                }
+                self.in_progress_crawl_requests.push(request);
+            }
+
+            // drain all in progress robots.txt lookups
+            for n in (0..self.in_progress_robots_txt_crawls.len()).rev() {
+                let mut request = self.in_progress_robots_txt_crawls.swap_remove(n);
+                if let Poll::Ready(resp) = request.poll_unpin(cx) {
+                    match resp {
+                        Ok(robots) => {
+                            self.in_progress_robots_txt_crawl_hosts.remove(&robots.host);
+                            self.robots_map.insert(robots);
+                        }
+                        Err(host) => {
+                            self.in_progress_robots_txt_crawl_hosts.remove(&host);
+                            self.queued_results.push_back(CrawlResult::Crawled(Err(
                                 CrawlError::<T::State>::RobotsTxtError { host }.into(),
                             )));
+                        }
                     }
+                } else {
+                    self.in_progress_robots_txt_crawls.push(request);
                 }
-            } else {
-                self.in_progress_robots_txt_crawls.push(request);
             }
-        }
 
-        // queue in pending request
-        while self.in_progress_crawl_requests.len() < self.max_request {
-            let now = Instant::now();
-            if let Some((request, state)) = self.request_queue.pop_front() {
-                match request.build() {
-                    Ok(request) => {
-                        let mut next_request = None;
-                        let url = request.url();
-                        if let Some((domain, host)) = url.domain().and_then(|d| {
-                            url.host_str().map(|h| (d.to_lowercase(), h.to_lowercase()))
-                        }) {
-                            if let Some((key, mut domain)) =
-                                self.allowed_domains.remove_entry(&domain)
-                            {
-                                // the domain is whitelisted
-                                if self.respect_robots_txt {
-                                    // check if robots txt was already fetched, or fetching is in
-                                    // progress
-                                    if let Some(robots) = self.robots_map.get(host.as_str()) {
-                                        if robots.is_not_disallowed(&request) {
-                                            // not explicitly disallowed
-                                            next_request = Some(
-                                                domain.queue_or_pop_front(request, state, now),
-                                            );
-                                        } else {
-                                            self.queued_results.push_back(CrawlEvent::Crawled(
-                                                Err(CrawlError::DisallowedRequest {
-                                                    request,
-                                                    state,
-                                                    reason: DisallowReason::RobotsTxt,
-                                                }
-                                                .into()),
-                                            ));
-                                        }
-                                    } else if self
-                                        .in_progress_robots_txt_crawl_hosts
-                                        .contains(&host)
-                                    {
-                                        // robots txt request currently in progress
-                                        domain.queue_mut().push_back((request, state));
+            // queue in pending request
+            while self.in_progress_crawl_requests.len() < self.max_request {
+                let now = Instant::now();
+                if let Some((request, state)) = self.request_queue.pop_front() {
+                    match request.build() {
+                        Ok(request) => {
+                            let mut next_request = None;
+                            let url = request.url();
+                            if let Some((domain, host)) = url.domain().and_then(|d| {
+                                url.host_str().map(|h| (d.to_lowercase(), h.to_lowercase()))
+                            }) {
+                                if let Some((key, domain)) =
+                                    self.allowed_domains.remove_entry(&domain)
+                                {
+                                    next_request = self.handle_request_for_whitelisted_domain(
+                                        domain,
+                                        request,
+                                        state,
+                                        key,
+                                        host.clone(),
+                                        now,
+                                    );
+                                } else if self.allowed_domains.is_empty() {
+                                    // no domains whitelisted, all domains that are not blacklisted
+                                    // are allowed
+                                    if self.disallowed_domains.contains(&domain) {
+                                        // domain is blacklisted
+                                        self.queued_results.push_back(CrawlResult::Crawled(Err(
+                                            CrawlError::DisallowedRequest {
+                                                request,
+                                                state,
+                                                reason: DisallowReason::User,
+                                            }
+                                            .into(),
+                                        )));
                                     } else {
-                                        // robots txt not requested yet for this
-                                        // request's host
-                                        self.get_robots_txt(url.clone(), host);
-                                        domain.queue_mut().push_back((request, state));
+                                        // whitelist empty and domain not on
+                                        // blacklist
+                                        next_request = self
+                                            .handle_not_whitelisted_and_not_blacklisted(
+                                                request, state, host,
+                                            );
                                     }
                                 } else {
-                                    next_request =
-                                        Some(domain.queue_or_pop_front(request, state, now));
-                                }
-                                self.allowed_domains.insert(key, domain);
-                            } else if self.allowed_domains.is_empty() {
-                                // no domains whitelisted, all domains that are not blacklisted are
-                                // allowed
-                                if self.disallowed_domains.contains(&domain) {
-                                    // domain is blacklisted
-                                    self.queued_results.push_back(CrawlEvent::Crawled(Err(
+                                    // the domain is not whitelisted and the request therefore
+                                    // rejected
+                                    self.queued_results.push_back(CrawlResult::Crawled(Err(
                                         CrawlError::DisallowedRequest {
                                             request,
                                             state,
@@ -367,80 +512,48 @@ where
                                         }
                                         .into(),
                                     )));
-                                } else {
-                                    // whitelist empty and domain not on
-                                    // blacklist
-                                    if self.respect_robots_txt {
-                                        if let Some(robots) = self.robots_map.get(host.as_str()) {
-                                            if robots.is_not_disallowed(&request) {
-                                                // not explicitly disallowed
-                                                next_request = Some((
-                                                    request,
-                                                    state,
-                                                    self.request_delay().map(|d| d.delay()),
-                                                ))
-                                            } else {
-                                                self.queued_results.push_back(CrawlEvent::Crawled(
-                                                    Err(CrawlError::DisallowedRequest {
-                                                        request,
-                                                        state,
-                                                        reason: DisallowReason::RobotsTxt,
-                                                    }
-                                                    .into()),
-                                                ));
-                                            }
-                                        } else if self
-                                            .in_progress_robots_txt_crawl_hosts
-                                            .contains(&host)
-                                        {
-                                            self.buffered_until_robots.push_back((request, state));
-                                        } else {
-                                            // robots txt not requested yet for this
-                                            // request's host
-                                            self.get_robots_txt(url.clone(), host);
-                                            self.buffered_until_robots.push_back((request, state));
-                                        }
-                                    } else {
-                                        next_request = Some((
-                                            request,
-                                            state,
-                                            self.request_delay().map(|d| d.delay()),
-                                        ))
-                                    }
                                 }
                             } else {
-                                // the domain is not whitelisted and the request therefore rejected
-                                self.queued_results.push_back(CrawlEvent::Crawled(Err(
-                                    CrawlError::DisallowedRequest {
-                                        request,
-                                        state,
-                                        reason: DisallowReason::User,
-                                    }
-                                    .into(),
+                                self.queued_results.push_back(CrawlResult::Crawled(Err(
+                                    CrawlError::InvalidRequest { request, state }.into(),
                                 )));
                             }
-                        } else {
-                            self.queued_results.push_back(CrawlEvent::Crawled(Err(
-                                CrawlError::InvalidRequest { request, state }.into(),
+
+                            // queue in the next request
+                            if let Some((request, state, delay)) = next_request {
+                                let mut fut = self.execute_request(request, state, delay);
+                                if let Poll::Ready(resp) = fut.poll_unpin(cx) {
+                                    self.queued_results.push_back(CrawlResult::Crawled(resp));
+                                } else {
+                                    self.in_progress_crawl_requests.push(fut);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            // failed to create a request
+                            self.queued_results.push_back(CrawlResult::Crawled(Err(
+                                CrawlError::FailedToBuildRequest { error, state }.into(),
                             )));
                         }
                     }
-                    Err(error) => {
-                        // failed to create a request
-                        self.queued_results.push_back(CrawlEvent::Crawled(Err(
-                            CrawlError::FailedToBuildRequest { error, state }.into(),
-                        )));
-                    }
+                } else {
+                    break;
                 }
             }
+            // If no new results have been queued either, signal `NotReady` to
+            // be polled again later.
+            if self.queued_results.is_empty() {
+                return Poll::Pending;
+            }
         }
-
-        Poll::Pending
     }
 }
 
-enum CrawlEvent<T: Scraper> {
+/// The result type a `Crawler` produces
+enum CrawlResult<T: Scraper> {
+    /// A submitted request to produce the `Scraper::Output` type has finished
     Finished(Result<T::Output>),
+    /// A page was crawled
     Crawled(Result<Response<T::State>>),
 }
 
@@ -505,39 +618,6 @@ pub trait Scraper: Sized {
     }
 }
 
-pub struct Reddit;
-
-impl Scraper for Reddit {
-    type Output = String;
-    type State = ();
-
-    fn scrape(
-        &mut self,
-        response: Response<Self::State>,
-        crawler: &mut Crawler<Self>,
-    ) -> Result<Option<Self::Output>> {
-        crawler.complete(move |client| async move {
-            dbg!(response.state);
-            client.get("").send().await?;
-            Ok(Some("".to_string()))
-        });
-
-        unimplemented!()
-    }
-}
-
-pub struct UrlValidator {
-    allowed_domains: Vec<String>,
-    filters: Vec<Box<dyn UrlFilter>>,
-    robots_map: Vec<()>,
-}
-
-impl UrlValidator {
-    fn is_valid_url(&self, url: &Url) -> bool {
-        true
-    }
-}
-
 pub trait UrlFilter {
     fn is_valid(&self, url: &Url) -> bool;
 }
@@ -569,7 +649,8 @@ pub struct Stats {
     pub error_count: usize,
 }
 
-#[derive(Debug)]
+/// Configure a `Collector` and its `Crawler`
+#[derive(Debug, Clone)]
 pub struct CollectorConfig {
     /// Limits the recursion depth of visited URLs.
     max_depth: Option<usize>,
@@ -583,7 +664,7 @@ pub struct CollectorConfig {
     request_delay: Option<RequestDelay>,
 }
 
-/// How to delay request
+/// How to delay a request
 #[derive(Debug, Clone, Copy)]
 pub enum RequestDelay {
     /// Apply a fixed delay to request
@@ -601,8 +682,11 @@ pub enum RequestDelay {
 pub type DomainDelayMap<T> = HashMap<String, DomainDelay<T>>;
 
 pub struct DomainDelay<T> {
+    /// Currently queued requests to this domain
     in_progress_queue: VecDeque<(reqwest::Request, Option<T>)>,
+    /// When the lastest request was sent
     latest_requested: Option<Instant>,
+    /// the delay to prior to requests
     delay: Option<RequestDelay>,
 }
 
@@ -632,6 +716,11 @@ impl<T> DomainDelay<T> {
         None
     }
 
+    /// Stores the timestamp when the domain was last requested
+    fn set_requested_timestamp(&mut self, now: Instant) {
+        self.latest_requested = Some(now)
+    }
+
     /// Return the request next in line
     pub fn queue_or_pop_front(
         &mut self,
@@ -639,7 +728,13 @@ impl<T> DomainDelay<T> {
         state: Option<T>,
         now: Instant,
     ) -> (reqwest::Request, Option<T>, Option<Duration>) {
-        todo!()
+        let delay = self.next_delay(now);
+        if let Some((r, s)) = self.in_progress_queue.pop_front() {
+            self.in_progress_queue.push_back((request, state));
+            (r, s, delay)
+        } else {
+            (request, state, delay)
+        }
     }
 }
 
