@@ -10,7 +10,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context as StdContext, Poll};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -70,7 +70,7 @@ where
 {
     type Item = Result<T::Output>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut StdContext<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let pin = self.get_mut();
 
         loop {
@@ -81,6 +81,9 @@ where
                     CrawlResult::Crawled(Ok(response)) => {
                         // make sure the crawler knows the depth
                         pin.crawler.current_depth = response.depth;
+
+                        pin.crawler.stats.response_count =
+                            pin.crawler.stats.response_count.wrapping_add(1);
 
                         match pin.scraper.scrape(response, &mut pin.crawler) {
                             Ok(Some(output)) => return Poll::Ready(Some(Ok(output))),
@@ -119,8 +122,6 @@ pub struct Crawler<T: Scraper> {
     request_queue: VecDeque<QueuedRequest<T::State>>,
     /// Buffer for requests that wait until robots txt is finished
     buffered_until_robots: VecDeque<BufferedRequest<T::State>>,
-    /// The timestamp the latest request was send, polled for the first time
-    latest_request_send: Instant,
     /// The client that issues all the requests
     client: Arc<reqwest::Client>,
     /// Domain whitelist, if empty any domains are allowed to visit
@@ -144,6 +145,9 @@ pub struct Crawler<T: Scraper> {
     max_depth: usize,
     /// Respect any restrictions set by the target host's robots.txt file
     respect_robots_txt: bool,
+    /// Whether to ignore responses with a non 2xx response code see
+    /// `reqwest::Response::is_success`
+    skip_non_successful_responses: bool,
 }
 
 impl<T> Crawler<T>
@@ -263,12 +267,25 @@ where
             depth,
         } = request;
         let request_url = request.url().clone();
+        let skip_http_error_response = self.skip_non_successful_responses;
 
         let request = self.client.execute(request);
 
         Box::pin(async move {
             let mut resp = request.await?;
+
+            if !resp.status().is_success() && skip_http_error_response {
+                // skip unsuccessful response
+                return Err(CrawlError::NoSuccessResponse {
+                    request_url: Some(request_url),
+                    response: resp,
+                    state,
+                }
+                .into());
+            }
+
             let (status, url, headers) = response_info(&mut resp);
+
             let text = resp.text().await?;
 
             Ok(Response {
@@ -287,11 +304,13 @@ where
     ///
     /// If a delay was set, the request will wait for
     fn execute_request(
-        &self,
+        &mut self,
         request: BufferedRequest<T::State>,
         delay: Option<Duration>,
     ) -> CrawlRequest<T::State> {
         let request = self.get_response(request);
+
+        self.stats.request_count = self.stats.request_count.wrapping_add(1);
 
         if let Some(delay) = delay {
             Box::pin(async move {
@@ -317,6 +336,20 @@ where
             .and_then(|resp| RobotsHandler::from_response(resp).map_err(move |_| host));
 
         self.in_progress_robots_txt_crawls.push(Box::pin(fut));
+    }
+
+    fn execute_buffered_request(
+        &mut self,
+        req: BufferedRequest<T::State>,
+        delay: Option<Duration>,
+        cx: &mut Context<'_>,
+    ) {
+        let mut fut = self.execute_request(req, delay);
+        if let Poll::Ready(resp) = fut.poll_unpin(cx) {
+            self.queued_results.push_back(CrawlResult::Crawled(resp));
+        } else {
+            self.in_progress_crawl_requests.push(fut);
+        }
     }
 
     fn handle_not_whitelisted_and_not_blacklisted(
@@ -361,7 +394,8 @@ where
         key: String,
         host: String,
         now: Instant,
-    ) -> Option<(BufferedRequest<T::State>, Option<Duration>)> {
+        cx: &mut Context<'_>,
+    ) {
         let mut next_request = None;
         // the domain is whitelisted
         if self.respect_robots_txt {
@@ -370,7 +404,8 @@ where
             if let Some(robots) = self.robots_map.get(host.as_str()) {
                 if robots.is_not_disallowed(&req.request) {
                     // not explicitly disallowed
-                    next_request = Some(domain.queue_or_pop_front(req, now));
+                    domain.queue_mut().push_back(req);
+                    next_request = domain.poll(now);
                 } else {
                     self.queued_results.push_back(CrawlResult::Crawled(Err(
                         CrawlError::DisallowedRequest {
@@ -391,21 +426,22 @@ where
                 domain.queue_mut().push_back(req);
             }
         } else {
-            next_request = Some(domain.queue_or_pop_front(req, now));
+            domain.queue_mut().push_back(req);
+            next_request = domain.poll(now);
         }
 
-        // The `next_request` will be send immediately, so we track the timestamp to
+        // The `next_request` is send, so we track the timestamp to
         // delay any further requests to this domain
-        if next_request.is_some() {
+        if let Some(req) = next_request {
+            self.execute_buffered_request(req, None, cx);
             domain.set_requested_timestamp(now);
         }
 
         self.allowed_domains.insert(key, domain);
-        next_request
     }
 
     /// advance all requests
-    fn poll(&mut self, cx: &mut StdContext<'_>) -> Poll<Option<CrawlResult<T>>> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Option<CrawlResult<T>>> {
         loop {
             // drain all queued results first
             if let Some(result) = self.queued_results.pop_front() {
@@ -464,9 +500,29 @@ where
                 }
             }
 
+            for _ in 0..self.buffered_until_robots.len() {
+                if let Some(req) = self.buffered_until_robots.pop_front() {
+                    if req
+                        .request
+                        .url()
+                        .host_str()
+                        .map(|host| self.in_progress_robots_txt_crawl_hosts.contains(host))
+                        .unwrap_or(true)
+                    {
+                        let fut = self.execute_request(req, None);
+                        self.in_progress_crawl_requests.push(fut);
+                    } else {
+                        self.buffered_until_robots.push_back(req)
+                    }
+                }
+            }
+
             // queue in pending request
             while self.in_progress_crawl_requests.len() < self.max_request {
                 let now = Instant::now();
+
+                // drain the domains
+
                 if let Some(QueuedRequest {
                     request,
                     state,
@@ -503,12 +559,13 @@ where
                                 if let Some((key, domain)) =
                                     self.allowed_domains.remove_entry(&domain)
                                 {
-                                    next_request = self.handle_request_for_whitelisted_domain(
+                                    self.handle_request_for_whitelisted_domain(
                                         domain,
                                         req,
                                         key,
                                         host.clone(),
                                         now,
+                                        cx,
                                     );
                                 } else if self.allowed_domains.is_empty() {
                                     // no domains whitelisted, all domains that are not blacklisted
@@ -553,12 +610,7 @@ where
 
                             // queue in the next request
                             if let Some((req, delay)) = next_request {
-                                let mut fut = self.execute_request(req, delay);
-                                if let Poll::Ready(resp) = fut.poll_unpin(cx) {
-                                    self.queued_results.push_back(CrawlResult::Crawled(resp));
-                                } else {
-                                    self.in_progress_crawl_requests.push(fut);
-                                }
+                                self.execute_buffered_request(req, delay, cx);
                             }
                         }
                         Err(error) => {
@@ -569,6 +621,7 @@ where
                         }
                     }
                 } else {
+                    // queue emptied
                     break;
                 }
             }
@@ -687,10 +740,8 @@ impl UrlFilter for regex::Regex {
 pub struct Stats {
     /// number of sent requests
     pub request_count: usize,
-    /// number of received 2xx responses
-    pub success_count: usize,
-    /// Failed and non 2xx responses
-    pub error_count: usize,
+    /// number of received successful responses
+    pub response_count: usize,
 }
 
 /// Configure a `Collector` and its `Crawler`
@@ -700,7 +751,7 @@ pub struct CollectorConfig {
     max_depth: Option<usize>,
     /// Whether to ignore responses with a non 2xx response code see
     /// `reqwest::Response::is_success`
-    skip_http_error_response: bool,
+    skip_non_successful_responses: bool,
     /// respects the any restrictions set by the target host's
     /// robots.txt file. See (http://www.robotstxt.org/)[http://www.robotstxt.org/] for more information.
     respect_robots_txt: bool,
@@ -765,18 +816,17 @@ impl<T> DomainDelay<T> {
         self.latest_requested = Some(now)
     }
 
-    /// Return the request next in line
-    fn queue_or_pop_front(
-        &mut self,
-        request: BufferedRequest<T>,
-        now: Instant,
-    ) -> (BufferedRequest<T>, Option<Duration>) {
-        let delay = self.next_delay(now);
-        if let Some(next) = self.in_progress_queue.pop_front() {
-            self.in_progress_queue.push_back(request);
-            (next, delay)
+    fn poll(&mut self, now: Instant) -> Option<BufferedRequest<T>> {
+        if let Some(delay) = self.delay().map(|d| d.delay()) {
+            if let Some(last) = self.latest_requested {
+                let ready_in = last + delay;
+                if ready_in > now {
+                    return self.in_progress_queue.pop_front();
+                }
+            }
+            None
         } else {
-            (request, delay)
+            self.in_progress_queue.pop_front()
         }
     }
 }
@@ -840,7 +890,7 @@ pub enum CrawlError<T: fmt::Debug> {
     },
     #[error("Failed to fetch robots.txt from {}", .host)]
     RobotsTxtError { host: String },
-    #[error("Rejected a request, because its url is disallowed due to {:?}, while carrying state: {:?}", .reason, .state)]
+    #[error("Rejected a request, because its url is disallowed due to {}, while carrying state: {:?}", .reason, .state)]
     DisallowedRequest {
         reason: DisallowReason,
         request: reqwest::Request,
@@ -848,7 +898,7 @@ pub enum CrawlError<T: fmt::Debug> {
     },
 }
 
-impl<T> CrawlError<T> {
+impl<T: fmt::Debug> CrawlError<T> {
     /// Get the state this error is carrying
     pub fn state(&self) -> Option<&T> {
         match self {
@@ -862,7 +912,7 @@ impl<T> CrawlError<T> {
     }
 
     /// Recover the state this error may carrying
-    pub fn state_mut(&mut self) -> &mut Option<T> {
+    pub fn into_state(self) -> Option<T> {
         match self {
             CrawlError::NoSuccessResponse { state, .. } => state,
             CrawlError::FailedToBuildRequest { state, .. } => state,
@@ -880,6 +930,19 @@ pub enum DisallowReason {
     RobotsTxt,
     /// Request disallowed by user config
     User,
+}
+
+impl fmt::Display for DisallowReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DisallowReason::RobotsTxt => {
+                write!(f, "URL blocked by robots.txt")
+            }
+            DisallowReason::User => {
+                write!(f, "URL blocked by user config")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Error)]
