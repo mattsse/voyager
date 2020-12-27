@@ -1,43 +1,43 @@
 use anyhow::Result;
 use futures::StreamExt;
 use reqwest::Url;
+use std::time::Duration;
 use voyager::scraper::Selector;
-use voyager::{Collector, Crawler, CrawlerConfig, Response, Scraper};
+use voyager::{Collector, Crawler, CrawlerConfig, RequestDelay, Response, Scraper};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pub struct Reddit {
         post_selector: Selector,
         title_selector: Selector,
-        updoots_selector: Selector,
-        current_page: usize,
+        base_url: Url,
     }
 
     impl Default for Reddit {
         fn default() -> Self {
             Self {
                 post_selector: Selector::parse("div#siteTable div.thing").unwrap(),
-                title_selector: Selector::parse("a").unwrap(),
-                updoots_selector: Selector::parse("a").unwrap(),
-                current_page: 0,
+                title_selector: Selector::parse("a.title").unwrap(),
+                base_url: Url::parse("https://old.reddit.com").unwrap(),
             }
         }
     }
 
     #[derive(Debug)]
     pub enum RedditState {
-        Page,
+        SubReddit { after: Option<String>, name: String },
         Post(Post),
     }
 
     #[derive(Debug)]
     pub struct Post {
-        post_url: Url,
+        data_url: Url,
         subreddit: String,
         title: String,
         updoots: usize,
         position: usize,
         comments: Vec<String>,
+        data_full_name: String,
     }
 
     impl Scraper for Reddit {
@@ -51,32 +51,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ) -> Result<Option<Self::Output>> {
             let html = response.html();
 
-            let posts = html
-                .select(&self.post_selector)
-                .filter_map(|el| el.value().attr("data-url"))
-                .collect::<Vec<_>>();
+            if let Some(state) = response.state {
+                match state {
+                    RedditState::SubReddit { name, .. } => {
+                        let mut entry_id = None;
+                        // data-fullname
+                        for (idx, el) in html.select(&self.post_selector).enumerate() {
+                            let val = el.value();
+                            let comments_count = val
+                                .attr("data-comments-count")
+                                .and_then(|s| s.parse::<usize>().ok())
+                                .unwrap();
 
-            // if let Some(state) = response.state {
-            //     match state {
-            //         RedditState::Page => {
-            //             // find all links and vist
-            //         }
-            //         RedditState::Post(position) => {
-            //             // scrape and return
-            //         }
-            //     }
-            // }
+                            entry_id = val.attr("data-fullname");
+
+                            let post = Post {
+                                data_url: val
+                                    .attr("data-url")
+                                    .and_then(|url| self.base_url.join(url).ok())
+                                    .unwrap(),
+                                subreddit: name.clone(),
+                                title: el
+                                    .select(&self.title_selector)
+                                    .next()
+                                    .map(|a| a.inner_html())
+                                    .unwrap(),
+                                updoots: val
+                                    .attr("data-score")
+                                    .and_then(|s| s.parse::<usize>().ok())
+                                    .unwrap_or_default(),
+                                position: idx + 1,
+                                comments: Vec::with_capacity(comments_count),
+                                data_full_name: entry_id.clone().map(|s| s.to_string()).unwrap(),
+                            };
+
+                            if comments_count > 0 {
+                                let post_url = val
+                                    .attr("data-permalink")
+                                    .and_then(|url| self.base_url.join(url).ok())
+                                    .unwrap();
+                                crawler.visit_with_state(post_url, RedditState::Post(post));
+                            } else {
+                                return Ok(Some(post));
+                            }
+                        }
+                    }
+                    RedditState::Post(post) => {
+                        // scrape comments..
+
+                        return Ok(Some(post));
+                    }
+                }
+            }
 
             Ok(None)
         }
     }
 
-    let config = CrawlerConfig::default().allow_domain("old.reddit.com");
+    let config = CrawlerConfig::default().allow_domain_with_delay(
+        "old.reddit.com",
+        RequestDelay::fixed(Duration::from_millis(2000)),
+    );
     let mut collector = Collector::new(Reddit::default(), config);
 
-    collector
-        .crawler_mut()
-        .visit_with_state("https://old.reddit.com/r/rust/", RedditState::Page);
+    collector.crawler_mut().visit_with_state(
+        "https://old.reddit.com/r/rust/",
+        RedditState::SubReddit {
+            after: None,
+            name: "rust".to_string(),
+        },
+    );
 
     while let Some(output) = collector.next().await {
         let post = output.unwrap();
