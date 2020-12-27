@@ -3,7 +3,7 @@ use anyhow::Result;
 use futures::stream::Stream;
 use futures::{FutureExt, TryFutureExt};
 use reqwest::header::HeaderMap;
-use reqwest::{IntoUrl, Request, StatusCode, Url};
+use reqwest::{IntoUrl, StatusCode, Url};
 use scraper::Html;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -114,9 +114,9 @@ pub struct Crawler<T: Scraper> {
     /// stores the futures that request the robots txt for a host
     in_progress_robots_txt_crawls: Vec<Pin<Box<dyn Future<Output = Result<RobotsData, String>>>>>,
     /// Requests that are currently waiting to be executed
-    request_queue: VecDeque<(reqwest::RequestBuilder, Option<T::State>)>,
+    request_queue: VecDeque<QueuedRequest<T::State>>,
     /// Buffer for requests that wait until robots txt is finished
-    buffered_until_robots: VecDeque<(reqwest::Request, Option<T::State>)>,
+    buffered_until_robots: VecDeque<BufferedRequest<T::State>>,
     /// The timestamp the latest request was send, polled for the first time
     latest_request_send: Instant,
     /// The client that issues all the requests
@@ -209,8 +209,13 @@ where
         self.queue_request(req, Some(state))
     }
 
-    fn queue_request(&mut self, req: reqwest::RequestBuilder, state: Option<T::State>) {
-        self.request_queue.push_back((req, state))
+    fn queue_request(&mut self, request: reqwest::RequestBuilder, state: Option<T::State>) {
+        let req = QueuedRequest {
+            request,
+            state,
+            depth: self.current_depth + 1,
+        };
+        self.request_queue.push_back(req)
     }
 
     /// The client that performs all request
@@ -247,12 +252,12 @@ where
         self.request_delay().map(|d| d.delay())
     }
 
-    fn get_response(
-        &self,
-        request: reqwest::Request,
-        state: Option<T::State>,
-    ) -> CrawlRequest<T::State> {
-        let depth = self.current_depth + 1;
+    fn get_response(&self, request: BufferedRequest<T::State>) -> CrawlRequest<T::State> {
+        let BufferedRequest {
+            request,
+            state,
+            depth,
+        } = request;
         let request_url = request.url().clone();
 
         let request = self.client.execute(request);
@@ -279,11 +284,10 @@ where
     /// If a delay was set, the request will wait for
     fn execute_request(
         &self,
-        request: reqwest::Request,
-        state: Option<T::State>,
+        request: BufferedRequest<T::State>,
         delay: Option<Duration>,
     ) -> CrawlRequest<T::State> {
-        let request = self.get_response(request, state);
+        let request = self.get_response(request);
 
         if let Some(delay) = delay {
             Box::pin(async move {
@@ -313,36 +317,35 @@ where
 
     fn handle_not_whitelisted_and_not_blacklisted(
         &mut self,
-        request: Request,
-        state: Option<T::State>,
+        req: BufferedRequest<T::State>,
         host: String,
-    ) -> Option<(reqwest::Request, Option<T::State>, Option<Duration>)> {
+    ) -> Option<(BufferedRequest<T::State>, Option<Duration>)> {
         let mut next_request = None;
         if self.respect_robots_txt {
             if let Some(robots) = self.robots_map.get(host.as_str()) {
-                if robots.is_not_disallowed(&request) {
+                if robots.is_not_disallowed(&req.request) {
                     // not explicitly disallowed
-                    next_request = Some((request, state, self.request_delay().map(|d| d.delay())))
+                    next_request = Some((req, self.request_delay().map(|d| d.delay())))
                 } else {
                     self.queued_results.push_back(CrawlResult::Crawled(Err(
                         CrawlError::DisallowedRequest {
-                            request,
-                            state,
+                            request: req.request,
+                            state: req.state,
                             reason: DisallowReason::RobotsTxt,
                         }
                         .into(),
                     )));
                 }
             } else if self.in_progress_robots_txt_crawl_hosts.contains(&host) {
-                self.buffered_until_robots.push_back((request, state));
+                self.buffered_until_robots.push_back(req);
             } else {
                 // robots txt not requested yet for this
                 // request's host
-                self.get_robots_txt(request.url().clone(), host);
-                self.buffered_until_robots.push_back((request, state));
+                self.get_robots_txt(req.request.url().clone(), host);
+                self.buffered_until_robots.push_back(req);
             }
         } else {
-            next_request = Some((request, state, self.request_delay().map(|d| d.delay())))
+            next_request = Some((req, self.request_delay().map(|d| d.delay())))
         }
         next_request
     }
@@ -350,26 +353,25 @@ where
     fn handle_request_for_whitelisted_domain(
         &mut self,
         mut domain: DomainDelay<T::State>,
-        request: Request,
-        state: Option<T::State>,
+        req: BufferedRequest<T::State>,
         key: String,
         host: String,
         now: Instant,
-    ) -> Option<(reqwest::Request, Option<T::State>, Option<Duration>)> {
+    ) -> Option<(BufferedRequest<T::State>, Option<Duration>)> {
         let mut next_request = None;
         // the domain is whitelisted
         if self.respect_robots_txt {
             // check if robots txt was already fetched, or fetching is in
             // progress
             if let Some(robots) = self.robots_map.get(host.as_str()) {
-                if robots.is_not_disallowed(&request) {
+                if robots.is_not_disallowed(&req.request) {
                     // not explicitly disallowed
-                    next_request = Some(domain.queue_or_pop_front(request, state, now));
+                    next_request = Some(domain.queue_or_pop_front(req, now));
                 } else {
                     self.queued_results.push_back(CrawlResult::Crawled(Err(
                         CrawlError::DisallowedRequest {
-                            request,
-                            state,
+                            request: req.request,
+                            state: req.state,
                             reason: DisallowReason::RobotsTxt,
                         }
                         .into(),
@@ -377,15 +379,15 @@ where
                 }
             } else if self.in_progress_robots_txt_crawl_hosts.contains(&host) {
                 // robots txt request currently in progress
-                domain.queue_mut().push_back((request, state));
+                domain.queue_mut().push_back(req);
             } else {
                 // robots txt not requested yet for this
                 // request's host
-                self.get_robots_txt(request.url().clone(), host);
-                domain.queue_mut().push_back((request, state));
+                self.get_robots_txt(req.request.url().clone(), host);
+                domain.queue_mut().push_back(req);
             }
         } else {
-            next_request = Some(domain.queue_or_pop_front(request, state, now));
+            next_request = Some(domain.queue_or_pop_front(req, now));
         }
 
         // The `next_request` will be send immediately, so we track the timestamp to
@@ -461,21 +463,32 @@ where
             // queue in pending request
             while self.in_progress_crawl_requests.len() < self.max_request {
                 let now = Instant::now();
-                if let Some((request, state)) = self.request_queue.pop_front() {
+                if let Some(QueuedRequest {
+                    request,
+                    state,
+                    depth,
+                }) = self.request_queue.pop_front()
+                {
                     match request.build() {
                         Ok(request) => {
+                            let req = BufferedRequest {
+                                request,
+                                state,
+                                depth,
+                            };
                             let mut next_request = None;
-                            let url = request.url();
-                            if let Some((domain, host)) = url.domain().and_then(|d| {
-                                url.host_str().map(|h| (d.to_lowercase(), h.to_lowercase()))
+                            if let Some((domain, host)) = req.request.url().domain().and_then(|d| {
+                                req.request
+                                    .url()
+                                    .host_str()
+                                    .map(|h| (d.to_lowercase(), h.to_lowercase()))
                             }) {
                                 if let Some((key, domain)) =
                                     self.allowed_domains.remove_entry(&domain)
                                 {
                                     next_request = self.handle_request_for_whitelisted_domain(
                                         domain,
-                                        request,
-                                        state,
+                                        req,
                                         key,
                                         host.clone(),
                                         now,
@@ -487,8 +500,8 @@ where
                                         // domain is blacklisted
                                         self.queued_results.push_back(CrawlResult::Crawled(Err(
                                             CrawlError::DisallowedRequest {
-                                                request,
-                                                state,
+                                                request: req.request,
+                                                state: req.state,
                                                 reason: DisallowReason::User,
                                             }
                                             .into(),
@@ -497,17 +510,15 @@ where
                                         // whitelist empty and domain not on
                                         // blacklist
                                         next_request = self
-                                            .handle_not_whitelisted_and_not_blacklisted(
-                                                request, state, host,
-                                            );
+                                            .handle_not_whitelisted_and_not_blacklisted(req, host);
                                     }
                                 } else {
                                     // the domain is not whitelisted and the request therefore
                                     // rejected
                                     self.queued_results.push_back(CrawlResult::Crawled(Err(
                                         CrawlError::DisallowedRequest {
-                                            request,
-                                            state,
+                                            request: req.request,
+                                            state: req.state,
                                             reason: DisallowReason::User,
                                         }
                                         .into(),
@@ -515,13 +526,17 @@ where
                                 }
                             } else {
                                 self.queued_results.push_back(CrawlResult::Crawled(Err(
-                                    CrawlError::InvalidRequest { request, state }.into(),
+                                    CrawlError::InvalidRequest {
+                                        request: req.request,
+                                        state: req.state,
+                                    }
+                                    .into(),
                                 )));
                             }
 
                             // queue in the next request
-                            if let Some((request, state, delay)) = next_request {
-                                let mut fut = self.execute_request(request, state, delay);
+                            if let Some((req, delay)) = next_request {
+                                let mut fut = self.execute_request(req, delay);
                                 if let Poll::Ready(resp) = fut.poll_unpin(cx) {
                                     self.queued_results.push_back(CrawlResult::Crawled(resp));
                                 } else {
@@ -555,6 +570,18 @@ enum CrawlResult<T: Scraper> {
     Finished(Result<T::Output>),
     /// A page was crawled
     Crawled(Result<Response<T::State>>),
+}
+
+struct QueuedRequest<T> {
+    request: reqwest::RequestBuilder,
+    state: Option<T>,
+    depth: usize,
+}
+
+struct BufferedRequest<T> {
+    request: reqwest::Request,
+    state: Option<T>,
+    depth: usize,
 }
 
 fn response_info(resp: &mut reqwest::Response) -> (StatusCode, Url, HeaderMap) {
@@ -683,7 +710,7 @@ pub type DomainDelayMap<T> = HashMap<String, DomainDelay<T>>;
 
 pub struct DomainDelay<T> {
     /// Currently queued requests to this domain
-    in_progress_queue: VecDeque<(reqwest::Request, Option<T>)>,
+    in_progress_queue: VecDeque<BufferedRequest<T>>,
     /// When the lastest request was sent
     latest_requested: Option<Instant>,
     /// the delay to prior to requests
@@ -695,7 +722,7 @@ impl<T> DomainDelay<T> {
         self.delay.as_ref()
     }
 
-    fn queue_mut(&mut self) -> &mut VecDeque<(reqwest::Request, Option<T>)> {
+    fn queue_mut(&mut self) -> &mut VecDeque<BufferedRequest<T>> {
         &mut self.in_progress_queue
     }
 
@@ -722,18 +749,17 @@ impl<T> DomainDelay<T> {
     }
 
     /// Return the request next in line
-    pub fn queue_or_pop_front(
+    fn queue_or_pop_front(
         &mut self,
-        request: reqwest::Request,
-        state: Option<T>,
+        request: BufferedRequest<T>,
         now: Instant,
-    ) -> (reqwest::Request, Option<T>, Option<Duration>) {
+    ) -> (BufferedRequest<T>, Option<Duration>) {
         let delay = self.next_delay(now);
-        if let Some((r, s)) = self.in_progress_queue.pop_front() {
-            self.in_progress_queue.push_back((request, state));
-            (r, s, delay)
+        if let Some(next) = self.in_progress_queue.pop_front() {
+            self.in_progress_queue.push_back(request);
+            (next, delay)
         } else {
-            (request, state, delay)
+            (request, delay)
         }
     }
 }
