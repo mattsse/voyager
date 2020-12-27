@@ -31,7 +31,7 @@ pub struct Collector<T: Scraper> {
 
 impl<T: Scraper> Collector<T> {
     /// Create a new `Collector` that uses the `scraper` for content extraction
-    pub fn new(scraper: T, config: CollectorConfig) -> Self {
+    pub fn new(scraper: T, config: CrawlerConfig) -> Self {
         Self {
             crawler: Crawler::new(config),
             scraper,
@@ -155,10 +155,12 @@ pub struct Crawler<T: Scraper> {
     /// Whether to ignore responses with a non 2xx response code see
     /// `reqwest::Response::is_success`
     skip_non_successful_responses: bool,
+    /// The filters to apply before issuing requests
+    url_filter: Vec<Box<dyn UrlFilter>>,
 }
 
 impl<T: Scraper> Crawler<T> {
-    pub fn new(config: CollectorConfig) -> Self {
+    pub fn new(config: CrawlerConfig) -> Self {
         let client = config
             .client
             .unwrap_or_else(|| Arc::new(Default::default()));
@@ -199,6 +201,7 @@ impl<T: Scraper> Crawler<T> {
             max_depth: config.max_depth.unwrap_or(usize::MAX),
             respect_robots_txt: config.respect_robots_txt,
             skip_non_successful_responses: config.skip_non_successful_responses,
+            url_filter: config.url_filter,
         }
     }
 }
@@ -277,6 +280,14 @@ where
             depth: self.current_depth + 1,
         };
         self.request_queue.push_back(req)
+    }
+
+    fn is_valid_url(&self, url: &Url) -> bool {
+        if self.url_filter.is_empty() {
+            true
+        } else {
+            self.url_filter.iter().any(|filter| filter.is_valid(url))
+        }
     }
 
     /// The client that performs all request
@@ -624,6 +635,19 @@ where
 
                     match request.build() {
                         Ok(request) => {
+                            if !self.is_valid_url(request.url()) {
+                                // apply urlfilter
+                                self.queued_results.push_back(CrawlResult::Crawled(Err(
+                                    CrawlError::DisallowedRequest {
+                                        request: request,
+                                        state: state,
+                                        reason: DisallowReason::User,
+                                    }
+                                    .into(),
+                                )));
+                                continue;
+                            }
+
                             let req = BufferedRequest {
                                 request,
                                 state,
@@ -790,14 +814,10 @@ pub trait Scraper: Sized {
         response: Response<Self::State>,
         crawler: &mut Crawler<Self>,
     ) -> Result<Option<Self::Output>>;
-
-    /// This checks whether a submitted url should in fact be requested
-    fn is_valid_url(&self, url: &Url) -> bool {
-        true
-    }
 }
 
 pub trait UrlFilter {
+    /// Checks whether the url is valid and should be requested
     fn is_valid(&self, url: &Url) -> bool;
 }
 
@@ -827,8 +847,7 @@ pub struct Stats {
 }
 
 /// Configure a `Collector` and its `Crawler`
-#[derive(Debug, Clone)]
-pub struct CollectorConfig {
+pub struct CrawlerConfig {
     /// Limits the recursion depth of visited URLs.
     max_depth: Option<usize>,
     /// Limits request to execute concurrently.
@@ -843,10 +862,128 @@ pub struct CollectorConfig {
     /// respects the any restrictions set by the target host's
     /// robots.txt file. See (http://www.robotstxt.org/)[http://www.robotstxt.org/] for more information.
     respect_robots_txt: bool,
-    /// Delay a request
-    request_delay: Option<RequestDelay>,
-
+    // /// Delay a request
+    // request_delay: Option<RequestDelay>,
+    /// The client that will be used to send the requests
     client: Option<Arc<reqwest::Client>>,
+    /// The filters to apply before issuing requests
+    url_filter: Vec<Box<dyn UrlFilter>>,
+}
+
+impl Default for CrawlerConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: None,
+            max_requests: None,
+            skip_non_successful_responses: true,
+            allowed_domains: Default::default(),
+            disallowed_domains: Default::default(),
+            respect_robots_txt: false,
+            // request_delay: None,
+            client: None,
+            url_filter: Default::default(),
+        }
+    }
+}
+
+impl CrawlerConfig {
+    pub fn max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = Some(max_depth);
+        self
+    }
+
+    pub fn max_requests(mut self, max_requests: usize) -> Self {
+        self.max_requests = Some(max_requests);
+        self
+    }
+
+    pub fn respect_robots_txt(mut self) -> Self {
+        self.respect_robots_txt = true;
+        self
+    }
+
+    pub fn scrape_non_success_response(mut self) -> Self {
+        self.skip_non_successful_responses = false;
+        self
+    }
+
+    pub fn set_client(mut self, client: reqwest::Client) -> Self {
+        self.client = Some(Arc::new(client));
+        self
+    }
+
+    pub fn with_shared_client(mut self, client: Arc<reqwest::Client>) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    pub fn disallow_domain(mut self, domain: impl Into<String>) -> Self {
+        self.disallowed_domains.insert(domain.into());
+        self
+    }
+
+    pub fn disallow_domains<I, T>(mut self, domains: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<String>,
+    {
+        for domain in domains.into_iter() {
+            self.disallowed_domains.insert(domain.into());
+        }
+        self
+    }
+
+    pub fn allow_domain_with_delay(
+        mut self,
+        domain: impl Into<String>,
+        delay: RequestDelay,
+    ) -> Self {
+        self.allowed_domains.insert(domain.into(), Some(delay));
+        self
+    }
+
+    pub fn allow_domain(mut self, domain: impl Into<String>) -> Self {
+        self.allowed_domains.insert(domain.into(), None);
+        self
+    }
+
+    pub fn allow_domains<I, T>(mut self, domains: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<String>,
+    {
+        for domain in domains.into_iter() {
+            self.allowed_domains.insert(domain.into(), None);
+        }
+        self
+    }
+
+    pub fn allow_domains_with_delay<I, T>(mut self, domains: I) -> Self
+    where
+        I: IntoIterator<Item = (T, RequestDelay)>,
+        T: Into<String>,
+    {
+        for (domain, delay) in domains.into_iter() {
+            self.allowed_domains.insert(domain.into(), Some(delay));
+        }
+        self
+    }
+
+    pub fn url_filter(mut self, filter: impl UrlFilter + 'static) -> Self {
+        self.url_filter.push(Box::new(filter));
+        self
+    }
+
+    pub fn url_filters<I, T>(mut self, filters: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: UrlFilter + 'static,
+    {
+        for filter in filters.into_iter() {
+            self.url_filter.push(Box::new(filter));
+        }
+        self
+    }
 }
 
 /// How to delay a request
