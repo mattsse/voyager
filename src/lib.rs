@@ -125,13 +125,15 @@ pub struct Crawler<T: Scraper> {
     /// The client that issues all the requests
     client: Arc<reqwest::Client>,
     /// Domain whitelist, if empty any domains are allowed to visit
-    allowed_domains: DomainDelayMap<T::State>,
+    allowed_domains: DomainMap<T::State>,
+    /// Used to iterate consistently over the domains
+    allowed_domains_keys: Vec<String>,
     /// Domain blacklist
     disallowed_domains: HashSet<String>,
     /// parsed robots.txt infos hashed by domain
     robots_map: HashSet<RobotsData>,
     /// Currently in progress robot txt crawl request
-    in_progress_robots_txt_crawl_hosts: HashSet<String>,
+    in_progress_robots_txt_crawl_hosts: HashMap<String, String>,
     /// used to track the depth of submitted requests
     current_depth: usize,
     /// The configured delay to use when no specific delay is configured for a
@@ -323,8 +325,9 @@ where
     }
 
     /// queue in a request to fetch the robots txt from the url's host
-    fn get_robots_txt(&mut self, mut url: Url, host: String) {
-        self.in_progress_robots_txt_crawl_hosts.insert(host.clone());
+    fn get_robots_txt(&mut self, mut url: Url, host: String, domain: String) {
+        self.in_progress_robots_txt_crawl_hosts
+            .insert(host.clone(), domain);
 
         url.set_path("robots.txt");
         let err = host.clone();
@@ -356,6 +359,7 @@ where
         &mut self,
         req: BufferedRequest<T::State>,
         host: String,
+        domain: String,
     ) -> Option<(BufferedRequest<T::State>, Option<Duration>)> {
         let mut next_request = None;
         if self.respect_robots_txt {
@@ -373,12 +377,12 @@ where
                         .into(),
                     )));
                 }
-            } else if self.in_progress_robots_txt_crawl_hosts.contains(&host) {
+            } else if self.in_progress_robots_txt_crawl_hosts.contains_key(&host) {
                 self.buffered_until_robots.push_back(req);
             } else {
                 // robots txt not requested yet for this
                 // request's host
-                self.get_robots_txt(req.request.url().clone(), host);
+                self.get_robots_txt(req.request.url().clone(), host, domain);
                 self.buffered_until_robots.push_back(req);
             }
         } else {
@@ -389,7 +393,7 @@ where
 
     fn handle_request_for_whitelisted_domain(
         &mut self,
-        mut domain: DomainDelay<T::State>,
+        mut domain: DomainRequestQueue<T::State>,
         req: BufferedRequest<T::State>,
         key: String,
         host: String,
@@ -416,13 +420,14 @@ where
                         .into(),
                     )));
                 }
-            } else if self.in_progress_robots_txt_crawl_hosts.contains(&host) {
+            } else if self.in_progress_robots_txt_crawl_hosts.contains_key(&host) {
                 // robots txt request currently in progress
                 domain.queue_mut().push_back(req);
             } else {
                 // robots txt not requested yet for this
                 // request's host
-                self.get_robots_txt(req.request.url().clone(), host);
+                self.get_robots_txt(req.request.url().clone(), host, key.clone());
+                domain.is_waiting_for_robots = true;
                 domain.queue_mut().push_back(req);
             }
         } else {
@@ -485,7 +490,13 @@ where
                 if let Poll::Ready(resp) = request.poll_unpin(cx) {
                     match resp {
                         Ok(robots) => {
-                            self.in_progress_robots_txt_crawl_hosts.remove(&robots.host);
+                            if let Some(domain) = self
+                                .in_progress_robots_txt_crawl_hosts
+                                .remove(&robots.host)
+                                .and_then(|domain| self.allowed_domains.get_mut(&domain))
+                            {
+                                domain.is_waiting_for_robots = false;
+                            }
                             self.robots_map.insert(robots);
                         }
                         Err(host) => {
@@ -506,7 +517,7 @@ where
                         .request
                         .url()
                         .host_str()
-                        .map(|host| self.in_progress_robots_txt_crawl_hosts.contains(host))
+                        .map(|host| self.in_progress_robots_txt_crawl_hosts.contains_key(host))
                         .unwrap_or(true)
                     {
                         let fut = self.execute_request(req, None);
@@ -517,11 +528,29 @@ where
                 }
             }
 
+            // drain whitelist
+            for n in (0..self.allowed_domains_keys.len()).rev() {
+                let domain_id = self.allowed_domains_keys.swap_remove(n);
+                if let Some((key, mut domain)) = self.allowed_domains.remove_entry(&domain_id) {
+                    if !domain.is_waiting_for_robots {
+                        while self.in_progress_crawl_requests.len() < self.max_request {
+                            let now = Instant::now();
+                            if let Some(req) = domain.poll(now) {
+                                self.execute_buffered_request(req, None, cx);
+                                domain.set_requested_timestamp(now);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.allowed_domains.insert(key, domain);
+                }
+                self.allowed_domains_keys.push(domain_id);
+            }
+
             // queue in pending request
             while self.in_progress_crawl_requests.len() < self.max_request {
                 let now = Instant::now();
-
-                // drain the domains
 
                 if let Some(QueuedRequest {
                     request,
@@ -584,7 +613,9 @@ where
                                         // whitelist empty and domain not on
                                         // blacklist
                                         next_request = self
-                                            .handle_not_whitelisted_and_not_blacklisted(req, host);
+                                            .handle_not_whitelisted_and_not_blacklisted(
+                                                req, host, domain,
+                                            );
                                     }
                                 } else {
                                     // the domain is not whitelisted and the request therefore
@@ -773,19 +804,21 @@ pub enum RequestDelay {
     },
 }
 
-/// A set of delays for specific domains
-pub type DomainDelayMap<T> = HashMap<String, DomainDelay<T>>;
+/// A set of whitelisted domains
+pub type DomainMap<T> = HashMap<String, DomainRequestQueue<T>>;
 
-pub struct DomainDelay<T> {
+pub struct DomainRequestQueue<T> {
+    /// If true, the robots.txt is currently fetched and waited on
+    is_waiting_for_robots: bool,
     /// Currently queued requests to this domain
     in_progress_queue: VecDeque<BufferedRequest<T>>,
-    /// When the lastest request was sent
+    /// When the latest request was sent
     latest_requested: Option<Instant>,
     /// the delay to prior to requests
     delay: Option<RequestDelay>,
 }
 
-impl<T> DomainDelay<T> {
+impl<T> DomainRequestQueue<T> {
     pub fn delay(&self) -> Option<&RequestDelay> {
         self.delay.as_ref()
     }
@@ -817,6 +850,9 @@ impl<T> DomainDelay<T> {
     }
 
     fn poll(&mut self, now: Instant) -> Option<BufferedRequest<T>> {
+        if self.is_waiting_for_robots {
+            return None;
+        }
         if let Some(delay) = self.delay().map(|d| d.delay()) {
             if let Some(last) = self.latest_requested {
                 let ready_in = last + delay;
