@@ -259,7 +259,7 @@ where
     }
 
     /// This queues in a GET request for the `url` with state attached
-    pub fn visit_with_context(&mut self, url: impl IntoUrl, state: T::State) {
+    pub fn visit_with_state(&mut self, url: impl IntoUrl, state: T::State) {
         self.request_with_state(self.client.request(reqwest::Method::GET, url), state)
     }
 
@@ -542,8 +542,9 @@ where
                 let mut request = self.in_progress_crawl_requests.swap_remove(n);
                 if let Poll::Ready(resp) = request.poll_unpin(cx) {
                     self.queued_results.push_back(CrawlResult::Crawled(resp));
+                } else {
+                    self.in_progress_crawl_requests.push(request);
                 }
-                self.in_progress_crawl_requests.push(request);
             }
 
             // drain all in progress robots.txt lookups
@@ -734,6 +735,19 @@ where
             // If no new results have been queued either, signal `NotReady` to
             // be polled again later.
             if self.queued_results.is_empty() {
+                if self.in_progress_crawl_requests.is_empty()
+                    && self.in_progress_complete_requests.is_empty()
+                    && self.in_progress_robots_txt_crawls.is_empty()
+                    && self.request_queue.is_empty()
+                    && self.buffered_until_robots.is_empty()
+                    && self
+                        .allowed_domains
+                        .values()
+                        .all(|d| d.in_progress_queue.is_empty())
+                {
+                    return Poll::Ready(None);
+                }
+
                 return Poll::Pending;
             }
         }

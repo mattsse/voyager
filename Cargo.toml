@@ -16,7 +16,7 @@ futures = "0.3"
 regex = { version = "1.4", optional = true }
 rand = "0.8"
 anyhow = "1.0"
-tokio = { version = "1.0", features = ["full"], optional = true }
+tokio = { version = "0.2", features = ["full"], optional = true }
 cfg-if = "1.0.0"
 futures-timer = "3.0"
 thiserror = "1.0.22"
@@ -26,3 +26,6 @@ robotstxt = "0.2.0"
 default = ["re"]
 re = ["regex"]
 
+[[example]]
+name = "reddit"
+required-features = ["tokio"]
