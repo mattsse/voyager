@@ -29,7 +29,7 @@ jobs:
           override: true
       - uses: actions-rs/cargo@v1
         with:
-          command: test
+          command: test --all-features
 
   fmt:
     name: Rustfmt
