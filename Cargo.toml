@@ -3,28 +3,25 @@ name = "voyager"
 version = "0.1.0"
 authors = ["Matthias Seitz <matthias.seitz@outlook.de>"]
 edition = "2018"
+description = "Web crawler and scraper"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 homepage = "https://github.com/mattsse/voyager"
 repository = "https://github.com/mattsse/voyager"
+keywords = ["scraping", "crawling", "html"]
+categories = ["web-programming"]
 
 [dependencies]
 html5ever = "0.25"
-scraper = "0.12.0"
+scraper = "0.12"
 reqwest = "0.10"
 futures = "0.3"
-regex = { version = "1.4", optional = true }
 rand = "0.8"
 anyhow = "1.0"
 tokio = { version = "0.2", features = ["full"], optional = true }
-cfg-if = "1.0.0"
 futures-timer = "3.0"
 thiserror = "1.0.22"
 robotstxt = "0.2.0"
-
-[features]
-default = ["re"]
-re = ["regex"]
 
 [[example]]
 name = "reddit"
