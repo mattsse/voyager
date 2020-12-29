@@ -1,3 +1,148 @@
+//! voyager
+//!
+//! With voyager you can easily extract structured data from websites.
+//!
+//! Write your own crawler/crawler with Voyager following a state machine model.
+//!
+//! # Example
+//!
+//! ```no_run
+//! # use voyager::scraper::Selector;
+//! # use reqwest::Url;
+//! /// Declare your scraper, with all the selectors etc.
+//! struct HackernewsScraper {
+//!     post_selector: Selector,
+//!     author_selector: Selector,
+//!     title_selector: Selector,
+//!     comment_selector: Selector,
+//!     max_page: usize,
+//! }
+//!
+//! /// The state model
+//! #[derive(Debug)]
+//! enum HackernewsState {
+//!     Page(usize),
+//!     Post,
+//! }
+//!
+//! /// The ouput the scraper should eventually produce
+//! #[derive(Debug)]
+//! struct Entry {
+//!     author: String,
+//!     url: Url,
+//!     link: Option<String>,
+//!     title: String,
+//! }
+//! ```
+//!
+//! # Implement the `voyager::Scraper` trait
+//!
+//! A `Scraper` consists of two associated types:
+//!
+//! * `Output`, the type the scraper eventually produces
+//! * `State`, the type, the scraper can drag along several requests that
+//!   eventually lead to an `Output`
+//!
+//! and the `scrape` callback, which is invoked after each received response.
+//!
+//! Based on the state attached to `response` you can supply the crawler with
+//! new urls to visit with, or without a state attached to it.
+//!
+//! Scraping is done with [causal-agent/scraper](https://github.com/causal-agent/scraper).
+//!
+//! ```ignore
+//! # use voyager::{Scraper, Response, Crawler};
+//! impl Scraper for HackernewsScraper {
+//!     type Output = Entry;
+//!     type State = HackernewsState;
+//!
+//!     /// do your scraping
+//!     fn scrape(
+//!         &mut self,
+//!         response: Response<Self::State>,
+//!         crawler: &mut Crawler<Self>,
+//!     ) -> Result<Option<Self::Output>> {
+//!         let html = response.html();
+//!
+//!         if let Some(state) = response.state {
+//!             match state {
+//!                 HackernewsState::Page(page) => {
+//!                     // find all entries
+//!                     for id in html
+//!                         .select(&self.post_selector)
+//!                         .filter_map(|el| el.value().attr("id"))
+//!                     {
+//!                         // submit an url to a post
+//!                         crawler.visit_with_state(
+//!                             &format!("https://news.ycombinator.com/item?id={}", id),
+//!                             HackernewsState::Post,
+//!                         );
+//!                     }
+//!                     if page < self.max_page {
+//!                         // queue in next page
+//!                         crawler.visit_with_state(
+//!                             &format!("https://news.ycombinator.com/news?p={}", page + 1),
+//!                             HackernewsState::Page(page + 1),
+//!                         );
+//!                     }
+//!                 }
+//!
+//!                 HackernewsState::Post => {
+//!                     // scrape the entry
+//!                     let entry = Entry {
+//!                         // ...
+//!                     };
+//!                     return Ok(Some(entry));
+//!                 }
+//!             }
+//!         }
+//!
+//!         Ok(None)
+//!     }
+//! }
+//! ```
+//!
+//!
+//! # Setup and collect all the output
+//!
+//! Configure the crawler with via `CrawlerConfig`:
+//!
+//! * Allow/Block list of URLs
+//! * Delays between requests
+//! * Whether to respect the `Robots.txt` rules
+//!
+//! Feed your config and an instance of your scraper to the `Collector` that
+//! drives the `Crawler` and forwards the responses to your `Scraper`.
+//!
+//! ```ignore
+//! # use voyager::scraper::Selector;
+//! # use voyager::*;
+//! # use tokio::stream::StreamExt;
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // only fulfill requests to `news.ycombinator.com`
+//!     let config = CrawlerConfig::default().allow_domain_with_delay(
+//!         "news.ycombinator.com",
+//!         // add a delay between requests
+//!         RequestDelay::Fixed(std::time::Duration::from_millis(2_000)),
+//!     );
+//!
+//!     let mut collector = Collector::new(HackernewsScraper::default(), config);
+//!
+//!     collector.crawler_mut().visit_with_state(
+//!         "https://news.ycombinator.com/news",
+//!         HackernewsState::Page(1),
+//!     );
+//!
+//!     while let Some(output) = collector.next().await {
+//!         let post = output?;
+//!         dbg!(post);
+//!     }
+//!
+//! #  Ok(())
+//! # }
+//! ```
+
 use anyhow::Result;
 use futures::stream::Stream;
 use futures::FutureExt;
@@ -121,6 +266,7 @@ pub struct Crawler<T: Scraper> {
     /// Futures that eventually result in `T::Output` and are piped directly to
     /// caller
     in_progress_complete_requests: Vec<OutputRequest<T::Output>>,
+    /// All injected futures that create a new state
     in_progress_crawl_requests: Vec<CrawlRequest<T::State>>,
     queued_results: VecDeque<CrawlResult<T>>,
     /// The client that issues all the requests
@@ -140,6 +286,7 @@ pub struct Crawler<T: Scraper> {
 }
 
 impl<T: Scraper> Crawler<T> {
+    /// Create a new crawler following the config
     pub fn new(config: CrawlerConfig) -> Self {
         let client = config
             .client
@@ -415,7 +562,7 @@ pub struct CrawlerConfig {
     /// Domain blacklist
     disallowed_domains: HashSet<String>,
     /// respects the any restrictions set by the target host's
-    /// robots.txt file. See (http://www.robotstxt.org/)[http://www.robotstxt.org/] for more information.
+    /// robots.txt file. See <http://www.robotstxt.org/>` for more information.
     respect_robots_txt: bool,
     // /// Delay a request
     // request_delay: Option<RequestDelay>,
