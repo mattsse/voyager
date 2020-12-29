@@ -4,7 +4,6 @@ use reqwest::header::USER_AGENT;
 use robotstxt::matcher::{LongestMatchRobotsMatchStrategy, RobotsMatchStrategy};
 use robotstxt::{get_path_params_query, parse_robotstxt, RobotsParseHandler};
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 /// The handler that parses the `robots.txt` into a `RobotsData`

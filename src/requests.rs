@@ -1,6 +1,8 @@
 use futures::stream::Stream;
 use futures::Future;
 use futures_timer::Delay;
+use reqwest::header::HeaderMap;
+use reqwest::{StatusCode, Url};
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -44,6 +46,10 @@ impl<T> RequestQueue<T> {
 
     pub fn is_empty(&self) -> bool {
         self.queued_requests.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queued_requests.len()
     }
 }
 
@@ -121,4 +127,10 @@ impl RequestDelay {
             ),
         }
     }
+}
+
+pub(crate) fn response_info(resp: &mut reqwest::Response) -> (StatusCode, Url, HeaderMap) {
+    let mut headers = HeaderMap::new();
+    std::mem::swap(&mut headers, resp.headers_mut());
+    (resp.status(), resp.url().clone(), headers)
 }

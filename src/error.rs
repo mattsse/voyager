@@ -16,6 +16,7 @@ pub enum CrawlError<T: fmt::Debug> {
     FailedToBuildRequest {
         error: reqwest::Error,
         state: Option<T>,
+        depth: usize,
     },
     #[error("Failed to process invalid request while carrying state: {:?}", .state)]
     InvalidRequest {
