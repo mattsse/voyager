@@ -180,8 +180,10 @@ impl RobotsData {
             .and_then(|agent| agent.to_str().ok())
             .unwrap_or("*");
 
-        // check all the rules that explicitly disallow access for the user agent
-        self.group_agents
+        // check if a rule explicitly disallows access, in other words: if there exists
+        // a rule that disallows access for the url's path, then `is_disallowed == true`
+        let is_disallowed = self
+            .group_agents
             .get(agent)
             .map(|groups| {
                 groups
@@ -192,7 +194,9 @@ impl RobotsData {
                     .filter(|rule| rule.is_disallow())
                     .any(|rule| LongestMatchRobotsMatchStrategy::matches(&path, &rule.pattern))
             })
-            .unwrap_or(true)
+            .unwrap_or_default();
+
+        !is_disallowed
     }
 }
 
@@ -240,5 +244,61 @@ impl Rule {
             pattern: path.into(),
             allow: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn robots_disallow_all() {
+        let mut handler = RobotsHandler::default();
+        parse_robotstxt(
+            "User-Agent: *
+Disallow: /",
+            &mut handler,
+        );
+        let data = handler.finish();
+        assert_eq!(data.groups.len(), 1);
+
+        let client = reqwest::Client::new();
+        let request = client
+            .request(reqwest::Method::GET, "https://old.reddit.com/r/rust")
+            .build()
+            .unwrap();
+        assert!(!data.is_not_disallowed(&request))
+    }
+
+    #[test]
+    fn empty_robots() {
+        let mut handler = RobotsHandler::default();
+        parse_robotstxt("", &mut handler);
+        let data = handler.finish();
+
+        let client = reqwest::Client::new();
+        let request = client
+            .request(reqwest::Method::GET, "https://old.reddit.com/r/rust")
+            .build()
+            .unwrap();
+        assert!(data.is_not_disallowed(&request))
+    }
+
+    #[test]
+    fn robots_path_rule() {
+        let mut handler = RobotsHandler::default();
+        parse_robotstxt(
+            "User-Agent: *
+Disallow: /r/rust",
+            &mut handler,
+        );
+        let data = handler.finish();
+
+        let client = reqwest::Client::new();
+        let request = client
+            .request(reqwest::Method::GET, "https://old.reddit.com/r/crust")
+            .build()
+            .unwrap();
+        assert!(data.is_not_disallowed(&request))
     }
 }
