@@ -152,10 +152,17 @@ impl<T: Scraper> Crawler<T> {
                 config.respect_robots_txt,
                 config.skip_non_successful_responses,
                 config.max_depth.unwrap_or(usize::MAX),
+                config
+                    .max_requests
+                    .unwrap_or(CrawlerConfig::MAX_CONCURRENT_REQUESTS),
             );
             DomainListing::BlockList(block_list)
         } else {
             let mut allow_list = AllowList::default();
+            let max_requests = config
+                .max_requests
+                .unwrap_or(CrawlerConfig::MAX_CONCURRENT_REQUESTS)
+                / config.allowed_domains.len();
             for (domain, delay) in config.allowed_domains {
                 let allow = AllowListConfig {
                     delay,
@@ -163,6 +170,7 @@ impl<T: Scraper> Crawler<T> {
                     client: Arc::clone(&client),
                     skip_non_successful_responses: config.skip_non_successful_responses,
                     max_depth: config.max_depth.unwrap_or(usize::MAX),
+                    max_requests,
                 };
                 allow_list.allow(domain, allow);
             }
@@ -396,6 +404,8 @@ pub struct CrawlerConfig {
     /// Limits the recursion depth of visited URLs.
     max_depth: Option<usize>,
     /// Limits request to execute concurrently.
+    ///
+    /// Default is `MAX_CONCURRENT_REQUESTS`
     max_requests: Option<usize>,
     /// Whether to ignore responses with a non 2xx response code see
     /// `reqwest::Response::is_success`
@@ -422,20 +432,16 @@ impl Default for CrawlerConfig {
             allowed_domains: Default::default(),
             disallowed_domains: Default::default(),
             respect_robots_txt: false,
-            // request_delay: None,
             client: None,
         }
     }
 }
 
 impl CrawlerConfig {
+    const MAX_CONCURRENT_REQUESTS: usize = 1_00;
+
     pub fn max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = Some(max_depth);
-        self
-    }
-
-    pub fn max_requests(mut self, max_requests: usize) -> Self {
-        self.max_requests = Some(max_requests);
         self
     }
 
@@ -508,6 +514,11 @@ impl CrawlerConfig {
         for (domain, delay) in domains.into_iter() {
             self.allowed_domains.insert(domain.into(), Some(delay));
         }
+        self
+    }
+
+    pub fn max_concurrent_requests(mut self, max_requests: usize) -> Self {
+        self.max_requests = Some(max_requests);
         self
     }
 }

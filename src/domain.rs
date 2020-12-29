@@ -199,6 +199,8 @@ pub struct AllowedDomain<T> {
     respect_robots_txt: bool,
     /// The maximum depth request are allowed to next
     max_depth: usize,
+    /// Limits request to execute concurrently.
+    max_requests: usize,
 }
 
 impl<T: fmt::Debug> AllowedDomain<T> {
@@ -216,6 +218,7 @@ impl<T: fmt::Debug> AllowedDomain<T> {
             skip_non_successful_responses: config.skip_non_successful_responses,
             respect_robots_txt: config.respect_robots_txt,
             max_depth: config.max_depth,
+            max_requests: config.max_requests,
         }
     }
 
@@ -315,6 +318,11 @@ where
                     return Poll::Ready(Some(resp));
                 } else {
                     pin.in_progress_crawl_requests.push(fut);
+
+                    if pin.in_progress_crawl_requests.len() > pin.max_requests {
+                        // stop when reached maximum of active requests
+                        break;
+                    }
                 }
             } else {
                 return Poll::Ready(Some(Err(CrawlError::DisallowedRequest {
@@ -354,6 +362,7 @@ pub struct AllowListConfig {
     pub client: Arc<reqwest::Client>,
     pub skip_non_successful_responses: bool,
     pub max_depth: usize,
+    pub max_requests: usize,
 }
 
 pub struct BlockList<T> {
@@ -378,6 +387,8 @@ pub struct BlockList<T> {
     max_depth: usize,
     /// all queued requests
     request_queue: RequestQueue<T>,
+    /// Limits request to execute concurrently.
+    max_requests: usize,
 }
 
 impl<T> BlockList<T> {
@@ -387,6 +398,7 @@ impl<T> BlockList<T> {
         respect_robots_txt: bool,
         skip_non_successful_responses: bool,
         max_depth: usize,
+        max_requests: usize,
     ) -> Self {
         BlockList {
             client,
@@ -399,6 +411,7 @@ impl<T> BlockList<T> {
             skip_non_successful_responses,
             request_queue: Default::default(),
             max_depth,
+            max_requests,
         }
     }
 }
@@ -466,7 +479,12 @@ where
             }
         }
 
+        // we add back to the queue in case robots.txt is required and not ready
         for _ in 0..pin.request_queue.len() {
+            if pin.in_progress_crawl_requests.len() > pin.max_requests {
+                break;
+            }
+
             if let Poll::Ready(Some(req)) = Stream::poll_next(Pin::new(&mut pin.request_queue), cx)
             {
                 if pin.respect_robots_txt {
