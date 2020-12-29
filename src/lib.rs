@@ -17,8 +17,9 @@ pub mod response;
 // /// Contains the robots txt types
 pub mod robots;
 use crate::domain::{AllowList, AllowListConfig, BlockList, DomainListing};
-use crate::requests::{response_info, QueuedRequestBuilder, RequestDelay};
-use crate::response::Response;
+pub use crate::requests::RequestDelay;
+use crate::requests::{response_info, QueuedRequestBuilder};
+pub use crate::response::Response;
 /// Reexport all the scraper types
 pub use scraper;
 

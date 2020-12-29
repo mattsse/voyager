@@ -163,7 +163,7 @@ where
             }
 
             if pin.queued_results.is_empty() {
-                return if busy {
+                return if !busy {
                     Poll::Ready(None)
                 } else {
                     Poll::Pending
