@@ -43,13 +43,11 @@ where
                     DomainListing::BlockList(list) => Ok(list.add_request(queued)?),
                 }
             }
-            Err(error) => {
-                return Err(CrawlError::<T>::FailedToBuildRequest {
-                    error,
-                    state,
-                    depth,
-                });
-            }
+            Err(error) => Err(CrawlError::<T>::FailedToBuildRequest {
+                error,
+                state,
+                depth,
+            }),
         }
     }
 }
