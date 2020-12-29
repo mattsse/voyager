@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match state {
                     RedditState::SubReddit { name, .. } => {
                         let mut entry_id = None;
-                        // data-fullname
+
                         for (idx, el) in html.select(&self.post_selector).enumerate() {
                             let val = el.value();
                             let comments_count = val

@@ -1,4 +1,4 @@
-use crate::UnexpectedStatusError;
+use crate::error::{CrawlError, UnexpectedStatusError};
 use anyhow::Result;
 use reqwest::header::USER_AGENT;
 use robotstxt::matcher::{LongestMatchRobotsMatchStrategy, RobotsMatchStrategy};
@@ -20,14 +20,13 @@ pub struct RobotsHandler {
 
 impl RobotsHandler {
     pub async fn from_response(resp: reqwest::Response) -> Result<RobotsData> {
-        let host = resp.url().host_str().unwrap_or("").to_lowercase();
         let status_code = resp.status().as_u16();
 
         if (200..300).contains(&status_code) {
             let txt = resp.text().await?;
             let mut handler = RobotsHandler::default();
             parse_robotstxt(&txt, &mut handler);
-            return Ok(handler.finish(host));
+            return Ok(handler.finish());
         }
 
         // See https://developers.google.com/webmasters/control-crawl-index/docs/robots_txt
@@ -37,14 +36,14 @@ impl RobotsHandler {
         // This is a "full allow" for crawling. Note: this includes 401
         // "Unauthorized" and 403 "Forbidden" HTTP result codes.
         if (400..500).contains(&status_code) {
-            return Ok(RobotsData::allow_all(host));
+            return Ok(RobotsData::allow_all());
         }
 
         // From Google's spec:
         // Server errors (5xx) are seen as temporary errors that result in a "full
         // disallow" of crawling.
         if (500..600).contains(&status_code) {
-            return Ok(RobotsData::disallow_all(host));
+            return Ok(RobotsData::disallow_all());
         }
 
         // status code not recognized
@@ -58,7 +57,7 @@ impl RobotsHandler {
         }
     }
 
-    pub fn finish(self, host: impl Into<String>) -> RobotsData {
+    pub fn finish(self) -> RobotsData {
         let mut groups = Vec::with_capacity(self.groups.len());
         let mut group_agents =
             HashMap::with_capacity(self.groups.iter().map(|(a, _)| a.len()).sum());
@@ -73,7 +72,6 @@ impl RobotsHandler {
         }
 
         RobotsData {
-            host: host.into(),
             groups,
             group_agents,
             allow_all: false,
@@ -131,8 +129,6 @@ impl RobotsParseHandler for RobotsHandler {
 /// Represents a `robots.txt` file
 #[derive(Debug, Clone)]
 pub struct RobotsData {
-    /// The host from where this data was fetched
-    pub host: String,
     /// All the groups in the `robots.txt`
     pub groups: Vec<Group>,
     /// Mapping of all user-agents to all their groups
@@ -145,9 +141,8 @@ pub struct RobotsData {
 
 impl RobotsData {
     /// All patterns for all agents are allowed
-    pub fn allow_all(host: impl Into<String>) -> Self {
+    pub fn allow_all() -> Self {
         Self {
-            host: host.into(),
             groups: Default::default(),
             group_agents: Default::default(),
             allow_all: true,
@@ -156,9 +151,8 @@ impl RobotsData {
     }
 
     /// All patterns for all agents are disallowed
-    pub fn disallow_all(host: impl Into<String>) -> Self {
+    pub fn disallow_all() -> Self {
         Self {
-            host: host.into(),
             groups: Default::default(),
             group_agents: Default::default(),
             allow_all: false,
@@ -200,26 +194,6 @@ impl RobotsData {
                     .any(|rule| LongestMatchRobotsMatchStrategy::matches(&path, &rule.pattern))
             })
             .unwrap_or(true)
-    }
-}
-
-impl PartialEq for RobotsData {
-    fn eq(&self, other: &Self) -> bool {
-        self.host == other.host
-    }
-}
-
-impl Eq for RobotsData {}
-
-impl Hash for RobotsData {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.host.hash(state)
-    }
-}
-
-impl std::borrow::Borrow<str> for RobotsData {
-    fn borrow(&self) -> &str {
-        &self.host
     }
 }
 
@@ -268,11 +242,4 @@ impl Rule {
             allow: false,
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn parse_robots() {}
 }
