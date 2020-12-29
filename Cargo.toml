@@ -26,6 +26,6 @@ robotstxt = "0.2.0"
 default = ["re"]
 re = ["regex"]
 
-#[[example]]
-#name = "reddit"
-#required-features = ["tokio"]
+[[example]]
+name = "reddit"
+required-features = ["tokio"]

@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = CrawlerConfig::default().allow_domain_with_delay(
         "old.reddit.com",
-        RequestDelay::fixed(Duration::from_millis(2000)),
+        RequestDelay::fixed(Duration::from_millis(20000)),
     );
     let mut collector = Collector::new(Reddit::default(), config);
 
