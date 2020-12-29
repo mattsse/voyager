@@ -14,7 +14,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         author_selector: Selector,
         title_selector: Selector,
         comment_selector: Selector,
-        base_url: Url,
         max_page: usize,
     }
 
@@ -25,7 +24,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 author_selector: Selector::parse("a.hnuser").unwrap(),
                 title_selector: Selector::parse("td.title a").unwrap(),
                 comment_selector: Selector::parse(".comment-tree tr.athing").unwrap(),
-                base_url: Url::parse("https://news.ycombinator.com/").unwrap(),
                 max_page: 1,
             }
         }
