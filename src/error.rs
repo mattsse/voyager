@@ -25,7 +25,7 @@ pub enum CrawlError<T: fmt::Debug> {
     },
     #[error("Reached max depth at {} while carrying state: {:?}", .depth ,.state)]
     ReachedMaxDepth {
-        request: reqwest::RequestBuilder,
+        request: reqwest::Request,
         state: Option<T>,
         depth: usize,
     },

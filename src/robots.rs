@@ -1,4 +1,4 @@
-use crate::error::{CrawlError, UnexpectedStatusError};
+use crate::error::UnexpectedStatusError;
 use anyhow::Result;
 use reqwest::header::USER_AGENT;
 use robotstxt::matcher::{LongestMatchRobotsMatchStrategy, RobotsMatchStrategy};

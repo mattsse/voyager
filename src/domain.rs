@@ -1,14 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use anyhow::{Error, Result};
+use anyhow::Result;
 use futures::stream::Stream;
-use futures::{Future, FutureExt, TryFutureExt};
-use reqwest::header::HeaderMap;
+use futures::{Future, FutureExt};
 
 use crate::error::{CrawlError, DisallowReason};
 use crate::requests::{
@@ -91,7 +89,7 @@ impl<T> Default for AllowList<T> {
     }
 }
 
-impl<T> AllowList<T> {
+impl<T: fmt::Debug> AllowList<T> {
     pub fn allow(&mut self, domain: String, config: AllowListConfig) {
         self.allowed
             .insert(domain.clone(), AllowedDomain::new(config));
@@ -116,8 +114,7 @@ where
     pub fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
         if let Some(host) = req.request.url().host_str() {
             if let Some(allowed) = self.allowed.get_mut(host) {
-                allowed.add_request(req);
-                Ok(())
+                allowed.add_request(req)
             } else {
                 Err(CrawlError::DisallowedRequest {
                     request: req.request,
@@ -202,9 +199,11 @@ pub struct AllowedDomain<T> {
     skip_non_successful_responses: bool,
     /// Respect any restrictions set by the target host's robots.txt file
     respect_robots_txt: bool,
+    /// The maximum depth request are allowed to next
+    max_depth: usize,
 }
 
-impl<T> AllowedDomain<T> {
+impl<T: fmt::Debug> AllowedDomain<T> {
     pub fn new(config: AllowListConfig) -> Self {
         Self {
             client: config.client,
@@ -218,10 +217,19 @@ impl<T> AllowedDomain<T> {
             robots: None,
             skip_non_successful_responses: config.skip_non_successful_responses,
             respect_robots_txt: config.respect_robots_txt,
+            max_depth: config.max_depth,
         }
     }
 
-    pub fn add_request(&mut self, req: QueuedRequest<T>) {
+    pub fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
+        if req.depth > self.max_depth {
+            return Err(CrawlError::ReachedMaxDepth {
+                request: req.request,
+                state: req.state,
+                depth: req.depth,
+            });
+        }
+
         if self.respect_robots_txt && self.robots.is_none() {
             if self.in_progress_robots_txt_crawls.is_none() {
                 // add request to fetch robots.txt
@@ -240,6 +248,7 @@ impl<T> AllowedDomain<T> {
         } else {
             self.request_queue.queue_mut().push_back(req);
         }
+        Ok(())
     }
 }
 
@@ -346,6 +355,7 @@ pub struct AllowListConfig {
     pub respect_robots_txt: bool,
     pub client: Arc<reqwest::Client>,
     pub skip_non_successful_responses: bool,
+    pub max_depth: usize,
 }
 
 pub struct BlockList<T> {
@@ -366,6 +376,8 @@ pub struct BlockList<T> {
     /// Whether to ignore responses with a non 2xx response code see
     /// `reqwest::Response::is_success`
     skip_non_successful_responses: bool,
+    /// The maximum depth request are allowed to next
+    max_depth: usize,
     /// all queued requests
     request_queue: RequestQueue<T>,
 }
@@ -376,6 +388,7 @@ impl<T> BlockList<T> {
         client: Arc<reqwest::Client>,
         respect_robots_txt: bool,
         skip_non_successful_responses: bool,
+        max_depth: usize,
     ) -> Self {
         BlockList {
             client,
@@ -387,6 +400,7 @@ impl<T> BlockList<T> {
             respect_robots_txt,
             skip_non_successful_responses,
             request_queue: Default::default(),
+            max_depth,
         }
     }
 }
@@ -396,6 +410,13 @@ where
     T: Unpin + Send + Sync + fmt::Debug + 'static,
 {
     pub fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
+        if req.depth > self.max_depth {
+            return Err(CrawlError::ReachedMaxDepth {
+                request: req.request,
+                state: req.state,
+                depth: req.depth,
+            });
+        }
         if let Some(host) = req.request.url().host_str() {
             if self.blocked_domains.contains(host) {
                 Err(CrawlError::DisallowedRequest {

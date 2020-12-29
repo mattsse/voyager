@@ -1,17 +1,13 @@
-use crate::robots::{RobotsData, RobotsHandler};
 use anyhow::Result;
 use futures::stream::Stream;
-use futures::{FutureExt, TryFutureExt};
-use reqwest::header::HeaderMap;
-use reqwest::{IntoUrl, StatusCode, Url};
-use scraper::Html;
+use futures::FutureExt;
+use reqwest::IntoUrl;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
 
 pub mod domain;
 pub mod error;
@@ -21,8 +17,7 @@ pub mod response;
 // /// Contains the robots txt types
 pub mod robots;
 use crate::domain::{AllowList, AllowListConfig, BlockList, DomainListing};
-use crate::error::CrawlError;
-use crate::requests::{response_info, QueuedRequestBuilder, RequestDelay, RequestQueue};
+use crate::requests::{response_info, QueuedRequestBuilder, RequestDelay};
 use crate::response::Response;
 /// Reexport all the scraper types
 pub use scraper;
@@ -126,7 +121,7 @@ pub struct Crawler<T: Scraper> {
     /// caller
     in_progress_complete_requests: Vec<OutputRequest<T::Output>>,
     in_progress_crawl_requests: Vec<CrawlRequest<T::State>>,
-    request_build_errors: VecDeque<CrawlError<T::State>>,
+    queued_results: VecDeque<CrawlResult<T>>,
     /// The client that issues all the requests
     client: Arc<reqwest::Client>,
     /// used to track the depth of submitted requests
@@ -141,8 +136,6 @@ pub struct Crawler<T: Scraper> {
     /// Whether to ignore responses with a non 2xx response code see
     /// `reqwest::Response::is_success`
     skip_non_successful_responses: bool,
-    /// The filters to apply before issuing requests
-    url_filter: Vec<Box<dyn UrlFilter>>,
 }
 
 impl<T: Scraper> Crawler<T> {
@@ -157,6 +150,7 @@ impl<T: Scraper> Crawler<T> {
                 Arc::clone(&client),
                 config.respect_robots_txt,
                 config.skip_non_successful_responses,
+                config.max_depth.unwrap_or(usize::MAX),
             );
             DomainListing::BlockList(block_list)
         } else {
@@ -167,6 +161,7 @@ impl<T: Scraper> Crawler<T> {
                     respect_robots_txt: config.respect_robots_txt,
                     client: Arc::clone(&client),
                     skip_non_successful_responses: config.skip_non_successful_responses,
+                    max_depth: config.max_depth.unwrap_or(usize::MAX),
                 };
                 allow_list.allow(domain, allow);
             }
@@ -176,7 +171,7 @@ impl<T: Scraper> Crawler<T> {
         Self {
             in_progress_complete_requests: Default::default(),
             in_progress_crawl_requests: Default::default(),
-            request_build_errors: Default::default(),
+            queued_results: Default::default(),
             client,
             current_depth: 0,
             list,
@@ -184,8 +179,19 @@ impl<T: Scraper> Crawler<T> {
             max_depth: config.max_depth.unwrap_or(usize::MAX),
             respect_robots_txt: config.respect_robots_txt,
             skip_non_successful_responses: config.skip_non_successful_responses,
-            url_filter: config.url_filter,
         }
+    }
+
+    pub fn max_depth(&self) -> usize {
+        self.max_depth
+    }
+
+    pub fn respects_robots_txt(&self) -> bool {
+        self.respect_robots_txt
+    }
+
+    pub fn skips_non_successful_responses(&self) -> bool {
+        self.skip_non_successful_responses
     }
 }
 
@@ -262,16 +268,9 @@ where
             state,
             depth: self.current_depth + 1,
         };
-        if let Err(error) = self.list.add_request(req) {
-            self.request_build_errors.push_back(error)
-        }
-    }
-
-    fn is_valid_url(&self, url: &Url) -> bool {
-        if self.url_filter.is_empty() {
-            true
-        } else {
-            self.url_filter.iter().any(|filter| filter.is_valid(url))
+        if let Err(err) = self.list.add_request(req) {
+            self.queued_results
+                .push_back(CrawlResult::Crawled(Err(err.into())))
         }
     }
 
@@ -282,7 +281,70 @@ where
 
     /// advance all requests
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Option<CrawlResult<T>>> {
-        Poll::Pending
+        loop {
+            // drain all results
+            if let Some(result) = self.queued_results.pop_front() {
+                return Poll::Ready(Some(result));
+            }
+
+            // drain submitted futures by removing them one by one and add them back if not
+            // ready
+            for n in (0..self.in_progress_complete_requests.len()).rev() {
+                let mut request = self.in_progress_complete_requests.swap_remove(n);
+                if let Poll::Ready(resp) = request.poll_unpin(cx) {
+                    match resp {
+                        Ok(Some(output)) => {
+                            self.queued_results
+                                .push_back(CrawlResult::Finished(Ok(output)));
+                        }
+                        Err(err) => {
+                            self.queued_results
+                                .push_back(CrawlResult::Finished(Err(err)));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.in_progress_complete_requests.push(request);
+                }
+            }
+
+            // drain the crawl futures by removing them one by one and add them back if not
+            // ready
+            for n in (0..self.in_progress_crawl_requests.len()).rev() {
+                let mut request = self.in_progress_crawl_requests.swap_remove(n);
+                if let Poll::Ready(resp) = request.poll_unpin(cx) {
+                    self.queued_results.push_back(CrawlResult::Crawled(resp));
+                } else {
+                    self.in_progress_crawl_requests.push(request);
+                }
+            }
+
+            let mut busy = false;
+            loop {
+                match Stream::poll_next(Pin::new(&mut self.list), cx) {
+                    Poll::Ready(Some(resp)) => {
+                        self.queued_results.push_back(CrawlResult::Crawled(resp));
+                    }
+                    Poll::Pending => {
+                        busy = true;
+                        break;
+                    }
+                    _ => break,
+                }
+            }
+
+            // If no new results have been queued either, signal `NotReady` or `Done` if all
+            // queues are drained
+            if self.queued_results.is_empty() {
+                if !busy
+                    && self.in_progress_crawl_requests.is_empty()
+                    && self.in_progress_complete_requests.is_empty()
+                {
+                    return Poll::Ready(None);
+                }
+                return Poll::Pending;
+            }
+        }
     }
 }
 
@@ -319,27 +381,6 @@ pub trait Scraper: Sized {
     ) -> Result<Option<Self::Output>>;
 }
 
-pub trait UrlFilter {
-    /// Checks whether the url is valid and should be requested
-    fn is_valid(&self, url: &Url) -> bool;
-}
-
-impl<F> UrlFilter for F
-where
-    F: Fn(&Url) -> bool,
-{
-    fn is_valid(&self, url: &Url) -> bool {
-        (self)(url)
-    }
-}
-
-#[cfg(feature = "re")]
-impl UrlFilter for regex::Regex {
-    fn is_valid(&self, url: &Url) -> bool {
-        self.is_match(url.as_str())
-    }
-}
-
 /// Stats about sent requests and received responses
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Stats {
@@ -369,8 +410,6 @@ pub struct CrawlerConfig {
     // request_delay: Option<RequestDelay>,
     /// The client that will be used to send the requests
     client: Option<Arc<reqwest::Client>>,
-    /// The filters to apply before issuing requests
-    url_filter: Vec<Box<dyn UrlFilter>>,
 }
 
 impl Default for CrawlerConfig {
@@ -384,7 +423,6 @@ impl Default for CrawlerConfig {
             respect_robots_txt: false,
             // request_delay: None,
             client: None,
-            url_filter: Default::default(),
         }
     }
 }
@@ -468,22 +506,6 @@ impl CrawlerConfig {
     {
         for (domain, delay) in domains.into_iter() {
             self.allowed_domains.insert(domain.into(), Some(delay));
-        }
-        self
-    }
-
-    pub fn url_filter(mut self, filter: impl UrlFilter + 'static) -> Self {
-        self.url_filter.push(Box::new(filter));
-        self
-    }
-
-    pub fn url_filters<I, T>(mut self, filters: I) -> Self
-    where
-        I: IntoIterator<Item = T>,
-        T: UrlFilter + 'static,
-    {
-        for filter in filters.into_iter() {
-            self.url_filter.push(Box::new(filter));
         }
         self
     }
