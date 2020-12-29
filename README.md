@@ -126,6 +126,7 @@ Feed your config and an instance of your scraper to the `Collector` that drives 
 ```rust
 use voyager::scraper::Selector;
 use voyager::*;
+use tokio::stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
