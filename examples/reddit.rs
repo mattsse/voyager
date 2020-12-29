@@ -6,7 +6,7 @@ use voyager::{Collector, Crawler, CrawlerConfig, Response, Scraper};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    pub struct Reddit {
+    struct Reddit {
         post_selector: Selector,
         title_selector: Selector,
         base_url: Url,
@@ -23,13 +23,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[derive(Debug)]
-    pub enum RedditState {
+    enum RedditState {
         SubReddit { after: Option<String>, name: String },
         Post(Post),
     }
 
     #[derive(Debug)]
-    pub struct Post {
+    struct Post {
         data_url: Url,
         subreddit: String,
         title: String,

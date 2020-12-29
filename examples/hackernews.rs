@@ -5,11 +5,11 @@ use futures::StreamExt;
 use reqwest::Url;
 use std::time::Duration;
 use voyager::scraper::Selector;
-use voyager::{Collector, Crawler, CrawlerConfig, Response, Scraper};
+use voyager::{Collector, Crawler, CrawlerConfig, RequestDelay, Response, Scraper};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    pub struct HackernewsScraper {
+    struct HackernewsScraper {
         post_selector: Selector,
         author_selector: Selector,
         title_selector: Selector,
@@ -32,13 +32,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[derive(Debug)]
-    pub enum HackernewsState {
+    enum HackernewsState {
         Page(usize),
         Post,
     }
 
     #[derive(Debug)]
-    pub struct Entry {
+    struct Entry {
         author: String,
         url: Url,
         link: Option<String>,
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     #[derive(Debug)]
-    pub struct Reply {
+    struct Reply {
         author: String,
         url: Url,
         comment: String,
