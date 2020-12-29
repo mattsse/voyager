@@ -126,8 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     while let Some(output) = collector.next().await {
-        let post = output;
-        dbg!(post);
+        if let Ok(post) = output {
+            println!("Post: {:?}", post)
+        }
     }
 
     Ok(())
