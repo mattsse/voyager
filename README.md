@@ -8,7 +8,7 @@ voyager
 
 With voyager you can easily extract structured data from websites.
 
-Write your own crawler/crawler with Voyager following a state machine model.
+Write your own crawler/scraper with voyager following a state machine model.
 
 ## Example
 
@@ -23,30 +23,30 @@ tokio = { version = "0.2", features = ["full"] }
 ### Declare your own Scraper and model
 
 ```rust
-    // Declare your scraper, with all the selectors etc.
-    struct HackernewsScraper {
-        post_selector: Selector,
-        author_selector: Selector,
-        title_selector: Selector,
-        comment_selector: Selector,
-        max_page: usize,
-    }
-    
-    /// The state model
-    #[derive(Debug)]
-    enum HackernewsState {
-        Page(usize),
-        Post,
-    }
-    
-    /// The ouput the scraper should eventually produce
-    #[derive(Debug)]
-    struct Entry {
-        author: String,
-        url: Url,
-        link: Option<String>,
-        title: String,
-    }
+// Declare your scraper, with all the selectors etc.
+struct HackernewsScraper {
+    post_selector: Selector,
+    author_selector: Selector,
+    title_selector: Selector,
+    comment_selector: Selector,
+    max_page: usize,
+}
+
+/// The state model
+#[derive(Debug)]
+enum HackernewsState {
+    Page(usize),
+    Post,
+}
+
+/// The ouput the scraper should eventually produce
+#[derive(Debug)]
+struct Entry {
+    author: String,
+    url: Url,
+    link: Option<String>,
+    title: String,
+}
 ```
 
 ### Implement the `voyager::Scraper` trait
