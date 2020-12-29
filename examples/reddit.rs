@@ -1,9 +1,8 @@
 use anyhow::Result;
 use futures::StreamExt;
 use reqwest::Url;
-use std::time::Duration;
 use voyager::scraper::Selector;
-use voyager::{Collector, Crawler, CrawlerConfig, RequestDelay, Response, Scraper};
+use voyager::{Collector, Crawler, CrawlerConfig, Response, Scraper};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,8 +53,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(state) = response.state {
                 match state {
                     RedditState::SubReddit { name, .. } => {
-                        let mut entry_id = None;
-
                         for (idx, el) in html.select(&self.post_selector).enumerate() {
                             let val = el.value();
                             let comments_count = val
@@ -63,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .and_then(|s| s.parse::<usize>().ok())
                                 .unwrap();
 
-                            entry_id = val.attr("data-fullname");
+                            let entry_id = val.attr("data-fullname");
 
                             let post = Post {
                                 data_url: val
@@ -103,15 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-
             Ok(None)
         }
     }
 
-    let config = CrawlerConfig::default().allow_domain_with_delay(
-        "old.reddit.com",
-        RequestDelay::fixed(Duration::from_millis(20000)),
-    );
+    let config = CrawlerConfig::default().allow_domain("old.reddit.com");
     let mut collector = Collector::new(Reddit::default(), config);
 
     collector.crawler_mut().visit_with_state(
@@ -123,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     while let Some(output) = collector.next().await {
-        let post = output.unwrap();
+        let post = output?;
         dbg!(post);
     }
 
