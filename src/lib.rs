@@ -154,22 +154,22 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-pub mod domain;
+mod domain;
 pub mod error;
-pub mod requests;
+mod requests;
 pub mod response;
 
 // /// Contains the robots txt types
 pub mod robots;
-use crate::domain::{AllowList, AllowListConfig, BlockList, DomainListing};
 pub use crate::requests::RequestDelay;
 use crate::requests::{response_info, QueuedRequestBuilder};
 pub use crate::response::Response;
+pub use domain::{AllowList, AllowListConfig, BlockList, DomainListing};
 /// Reexport all the scraper types
 pub use scraper;
 
 /// Collector controls the `Crawler` and forwards the successful requests to the
-/// `Scraper`.
+/// `Scraper`. and reports the `Scraper`'s `Output` back to the user.
 #[must_use = "Collector does nothing until polled."]
 pub struct Collector<T: Scraper> {
     /// The crawler that requests all the pages
@@ -273,6 +273,8 @@ pub struct Crawler<T: Scraper> {
     client: Arc<reqwest::Client>,
     /// used to track the depth of submitted requests
     current_depth: usize,
+    /// Either a list that only allows a set of domains or disallows a set of
+    /// domains
     list: DomainListing<T::State>,
     /// Stats about requests
     stats: Stats,
@@ -338,14 +340,18 @@ impl<T: Scraper> Crawler<T> {
         }
     }
 
+    /// The maximum allowed depth of requests
     pub fn max_depth(&self) -> usize {
         self.max_depth
     }
 
+    /// Whether this crawler respects the domains robots.txt rules
     pub fn respects_robots_txt(&self) -> bool {
         self.respect_robots_txt
     }
 
+    /// Whether non 2xx responses are treated as failures and are not being
+    /// scraped
     pub fn skips_non_successful_responses(&self) -> bool {
         self.skip_non_successful_responses
     }

@@ -24,7 +24,10 @@ impl<T> DomainListing<T>
 where
     T: Unpin + Send + Sync + fmt::Debug + 'static,
 {
-    pub fn add_request(&mut self, request: QueuedRequestBuilder<T>) -> Result<(), CrawlError<T>> {
+    pub(crate) fn add_request(
+        &mut self,
+        request: QueuedRequestBuilder<T>,
+    ) -> Result<(), CrawlError<T>> {
         let QueuedRequestBuilder {
             request,
             state,
@@ -103,13 +106,23 @@ impl<T: fmt::Debug> AllowList<T> {
             None
         }
     }
+
+    /// The matching handler for the allowed domain if any
+    pub fn get_domain(&self, domain: impl AsRef<str>) -> Option<&AllowedDomain<T>> {
+        self.allowed.get(domain.as_ref())
+    }
+
+    /// Get mutable access to the matching handler for the allowed domain if any
+    pub fn get_domain_mut(&mut self, domain: impl AsRef<str>) -> Option<&mut AllowedDomain<T>> {
+        self.allowed.get_mut(domain.as_ref())
+    }
 }
 
 impl<T> AllowList<T>
 where
     T: Unpin + Send + Sync + fmt::Debug + 'static,
 {
-    pub fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
+    pub(crate) fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
         if let Some(host) = req.request.url().host_str() {
             if let Some(allowed) = self.allowed.get_mut(host) {
                 allowed.add_request(req)
@@ -222,7 +235,7 @@ impl<T: fmt::Debug> AllowedDomain<T> {
         }
     }
 
-    pub fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
+    pub(crate) fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
         if req.depth > self.max_depth {
             return Err(CrawlError::ReachedMaxDepth {
                 request: req.request,
@@ -250,6 +263,16 @@ impl<T: fmt::Debug> AllowedDomain<T> {
             self.request_queue.queue_mut().push_back(req);
         }
         Ok(())
+    }
+
+    /// Remove the configured delay
+    pub fn remove_delay(&mut self) -> Option<RequestDelay> {
+        self.request_queue.remove_delay()
+    }
+
+    /// Set a delay between requests
+    pub fn set_delay(&mut self, delay: RequestDelay) -> Option<RequestDelay> {
+        self.request_queue.set_delay(delay)
     }
 }
 
@@ -420,7 +443,7 @@ impl<T> BlockList<T>
 where
     T: Unpin + Send + Sync + fmt::Debug + 'static,
 {
-    pub fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
+    pub(crate) fn add_request(&mut self, req: QueuedRequest<T>) -> Result<(), CrawlError<T>> {
         if req.depth > self.max_depth {
             return Err(CrawlError::ReachedMaxDepth {
                 request: req.request,
@@ -445,6 +468,26 @@ where
                 state: req.state,
             })
         }
+    }
+
+    /// Block requests to that domain
+    pub fn disallow(&mut self, domain: impl Into<String>) {
+        self.blocked_domains.insert(domain.into());
+    }
+
+    /// Remove a domain from the block list
+    pub fn allow(&mut self, domain: impl AsRef<str>) {
+        self.blocked_domains.remove(domain.as_ref());
+    }
+
+    /// Remove the configured delay
+    pub fn remove_delay(&mut self) -> Option<RequestDelay> {
+        self.request_queue.remove_delay()
+    }
+
+    /// Set a delay between requests
+    pub fn set_delay(&mut self, delay: RequestDelay) -> Option<RequestDelay> {
+        self.request_queue.set_delay(delay)
     }
 }
 

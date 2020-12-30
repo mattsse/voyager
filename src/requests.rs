@@ -44,6 +44,17 @@ impl<T> RequestQueue<T> {
         self.delay.take().map(|(_, d)| d)
     }
 
+    /// Set a delay to be applied between requests
+    pub fn set_delay(&mut self, mut delay: RequestDelay) -> Option<RequestDelay> {
+        if let Some((_, d)) = self.delay.as_mut() {
+            std::mem::swap(&mut delay, d);
+            Some(delay)
+        } else {
+            self.delay = Some((Delay::new(Duration::default()), delay));
+            None
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.queued_requests.is_empty()
     }
