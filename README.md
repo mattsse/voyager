@@ -4,7 +4,7 @@ voyager
 [<img alt="github" src="https://img.shields.io/badge/github-mattsse/voyager-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/mattsse/voyager)
 [<img alt="crates.io" src="https://img.shields.io/crates/v/voyager.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/voyager)
 [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-voyager-66c2a5?style=for-the-badge&labelColor=555555&logoColor=white&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">](https://docs.rs/voyager)
-[<img alt="build status" src="https://img.shields.io/github/workflow/status/mattsse/voyager/CI/master?style=for-the-badge" height="20">](https://github.com/mattsse/voyager/actions?query=branch%3Amaster)
+[<img alt="build status" src="https://img.shields.io/github/workflow/status/mattsse/voyager/CI/main?style=for-the-badge" height="20">](https://github.com/mattsse/voyager/actions?query=branch%3Amain)
 
 With voyager you can easily extract structured data from websites.
 
@@ -12,7 +12,7 @@ Write your own crawler/scraper with voyager following a state machine model.
 
 ## Example
 
-The examples use [tokio](https://tokio.rs/) for its runtime, so your `Cargo.toml` could look like this:
+The examples use [tokio](https://tokio.rs/) as its runtime, so your `Cargo.toml` could look like this:
 
 ```toml
 [dependencies]
@@ -117,7 +117,7 @@ impl Scraper for HackernewsScraper {
 
 Configure the crawler with via `CrawlerConfig`:
 
-* Allow/Block list of URLs
+* Allow/Block list of Domains
 * Delays between requests
 * Whether to respect the `Robots.txt` rules
 
@@ -186,6 +186,28 @@ fn scrape(
     });
     
     Ok(None)
+}
+```
+
+### Recover a state that got lost
+
+If the crawler encountered an error, due to a failed or disallowed http request, the error is reported as `CrawlError`, which carries the last valid state. The error then can be down casted.
+
+
+```rust
+
+let mut collector = Collector::new(HackernewsScraper::default(), config);
+
+while let Some(output) = collector.next().await {
+  match output {
+    Ok(post) => {/**/}
+    Err(err) => {
+      // recover the state by downcasting the error
+      if let Ok(err) = err.downcast::<CrawlError<<HackernewsScraper as Scraper>::State>>() {
+        let last_state = err.state();
+      }
+    }
+  }
 }
 ```
 
