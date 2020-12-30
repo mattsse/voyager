@@ -26,3 +26,11 @@ robotstxt = "0.2.0"
 [[example]]
 name = "reddit"
 required-features = ["tokio"]
+
+[[example]]
+name = "hackernews"
+required-features = ["tokio"]
+
+[[example]]
+name = "explore"
+required-features = ["tokio"]
