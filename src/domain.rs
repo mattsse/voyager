@@ -252,7 +252,7 @@ impl<T: fmt::Debug> AllowedDomain<T> {
                 let fut = self.client.get(url).send();
                 let fut = Box::pin(async move {
                     let resp = fut.await?;
-                    Ok(RobotsHandler::from_response(resp).await?)
+                    RobotsHandler::from_response(resp).await
                 });
                 self.in_progress_robots_txt_crawls = Some(fut);
             }
@@ -555,7 +555,7 @@ where
 
                             let fut = Box::pin(async move {
                                 let resp = fut.await?;
-                                Ok(RobotsHandler::from_response(resp).await?)
+                                RobotsHandler::from_response(resp).await
                             });
 
                             pin.in_progress_robots_txt_crawls
