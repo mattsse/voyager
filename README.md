@@ -17,7 +17,7 @@ The examples use [tokio](https://tokio.rs/) as its runtime, so your `Cargo.toml`
 ```toml
 [dependencies]
 voyager = { version = "0.1" }
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.8", features = ["full"] }
 ```
 
 ### Declare your own Scraper and model
