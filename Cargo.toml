@@ -1,6 +1,6 @@
 [package]
 name = "voyager"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Matthias Seitz <matthias.seitz@outlook.de>"]
 edition = "2018"
 description = "Web crawler and scraper"
@@ -14,13 +14,13 @@ categories = ["web-programming"]
 [dependencies]
 html5ever = "0.25.1"
 scraper = "0.12.0"
-reqwest = "0.11.2"
-futures = "0.3.13"
-rand = "0.8.3"
-anyhow = "1.0.40"
-tokio = { version = "1.4.0", features = ["full"], optional = true }
+reqwest = "0.11.4"
+futures = "0.3.15"
+rand = "0.8.4"
+anyhow = "1.0.41"
+tokio = { version = "1.8.1", features = ["full"], optional = true }
 futures-timer = "3.0.2"
-thiserror = "1.0.24"
+thiserror = "1.0.26"
 robotstxt = "0.3.0"
 
 [[example]]
