@@ -612,6 +612,7 @@ impl CrawlerConfig {
 
     /// *NOTE* [`reqwest::Client`] already uses Arc under the hood, so
     /// it's preferable to just `clone` it and pass via [`Self::set_client`]
+    #[deprecated( since = "0.2", message = "You do not have to wrap the Client it in a `Arc` to reuse it, because it already uses an `Arc` internally. Users should instead use `set_client`instead."]
     pub fn with_shared_client(mut self, client: std::sync::Arc<reqwest::Client>) -> Self {
         self.client = Some(client.as_ref().clone());
         self
