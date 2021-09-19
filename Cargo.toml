@@ -1,6 +1,6 @@
 [package]
 name = "voyager"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["Matthias Seitz <matthias.seitz@outlook.de>"]
 edition = "2018"
 description = "Web crawler and scraper"
