@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use anyhow::Result;
@@ -191,7 +190,7 @@ type CrawlRequest<T> = Pin<Box<dyn Future<Output = Result<Response<T>>>>>;
 type RobotsTxtRequest = Pin<Box<dyn Future<Output = Result<RobotsData>>>>;
 
 pub struct AllowedDomain<T> {
-    client: Arc<reqwest::Client>,
+    client: reqwest::Client,
     /// Futures that eventually return a http response that is passed to the
     /// scraper
     in_progress_crawl_requests: Vec<CrawlRequest<T>>,
@@ -382,14 +381,14 @@ where
 pub struct AllowListConfig {
     pub delay: Option<RequestDelay>,
     pub respect_robots_txt: bool,
-    pub client: Arc<reqwest::Client>,
+    pub client: reqwest::Client,
     pub skip_non_successful_responses: bool,
     pub max_depth: usize,
     pub max_requests: usize,
 }
 
 pub struct BlockList<T> {
-    client: Arc<reqwest::Client>,
+    client: reqwest::Client,
     /// list of domains that are blocked
     blocked_domains: HashSet<String>,
     /// Futures that eventually return a http response that is passed to the
@@ -417,7 +416,7 @@ pub struct BlockList<T> {
 impl<T> BlockList<T> {
     pub fn new(
         blocked_domains: HashSet<String>,
-        client: Arc<reqwest::Client>,
+        client: reqwest::Client,
         respect_robots_txt: bool,
         skip_non_successful_responses: bool,
         max_depth: usize,
