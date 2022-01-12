@@ -2,7 +2,7 @@
 name = "voyager"
 version = "0.2.1"
 authors = ["Matthias Seitz <matthias.seitz@outlook.de>"]
-edition = "2018"
+edition = "2021"
 description = "Web crawler and scraper"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
