@@ -289,7 +289,7 @@ pub struct Crawler<T: Scraper> {
 impl<T: Scraper> Crawler<T> {
     /// Create a new crawler following the config
     pub fn new(config: CrawlerConfig) -> Self {
-        let client = config.client.unwrap_or_else(Default::default);
+        let client = config.client.unwrap_or_default();
 
         let list = if config.allowed_domains.is_empty() {
             let block_list = BlockList::new(

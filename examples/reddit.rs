@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .unwrap_or_default(),
                                 position: idx + 1,
                                 comments: Vec::with_capacity(comments_count),
-                                data_full_name: entry_id.clone().map(|s| s.to_string()).unwrap(),
+                                data_full_name: entry_id.map(|s| s.to_string()).unwrap(),
                             };
 
                             if comments_count > 0 {
