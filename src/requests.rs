@@ -47,6 +47,7 @@ impl<T> RequestQueue<T> {
     /// Set a delay to be applied between requests
     pub fn set_delay(&mut self, mut delay: RequestDelay) -> Option<RequestDelay> {
         if let Some((_, d)) = self.delay.as_mut() {
+            //TODO: take a look. decide if this swap is necessary
             std::mem::swap(&mut delay, d);
             Some(delay)
         } else {
