@@ -141,7 +141,5 @@ impl RequestDelay {
 }
 
 pub(crate) fn response_info(resp: &mut reqwest::Response) -> (StatusCode, Url, HeaderMap) {
-    //let mut headers = HeaderMap::new();
-    //std::mem::swap(&mut headers, resp.headers_mut());
     (resp.status(), resp.url().clone(), resp.headers_mut().clone())
 }
