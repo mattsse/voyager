@@ -382,6 +382,8 @@ where
             dbg!(dbg_headers);
 
             let text = resp.text().await?;
+            dbg!(&text);
+            
 
             Ok(Response {
                 depth,

@@ -26,6 +26,7 @@ impl RobotsHandler {
             dbg!("robots");
             dbg!(dbg_headers);
             let txt = resp.text().await?;
+            dbg!(&txt);
             let mut handler = RobotsHandler::default();
             parse_robotstxt(&txt, &mut handler);
             return Ok(handler.finish());
