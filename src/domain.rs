@@ -633,7 +633,14 @@ where
             .into());
         }
 
-        let (status, url, headers) = response_info(&mut resp);
+        let (status, url, mut headers) = response_info(&mut resp);
+
+        if headers.get("Content-Type") == Some(&HeaderValue::from_static("text/html")) {
+            headers.insert(
+                "Content-Type",
+                HeaderValue::from_static("text/html; charset=windows-1252"),
+            );
+        }
 
         let text = resp.text().await?;
 
