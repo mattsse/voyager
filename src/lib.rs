@@ -381,7 +381,7 @@ where
             dbg!(&headers);
             dbg!(dbg_headers);
 
-            let text = resp.text_with_charset("windows-1252").await?;
+            let text = resp.text_with_charset("").await?;
 
             Ok(Response {
                 depth,
