@@ -639,8 +639,8 @@ where
         dbg!("domain");
         dbg!(&headers);
         dbg!(dbg_headers);
-        
-        let text = resp.text().await?;
+
+        let text = resp.text_with_charset("windows-1252").await?;
 
         Ok(Response {
             depth,
