@@ -147,6 +147,7 @@ use anyhow::Result;
 use futures::stream::Stream;
 use futures::FutureExt;
 use reqwest::IntoUrl;
+use reqwest::header::HeaderValue;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
@@ -376,13 +377,18 @@ where
             let (status, url, headers) = response_info(&mut resp);
 
             // debug
-            let dbg_headers = resp.headers();
+            let dbg_headers = resp.headers_mut();
             dbg!("lib");
             dbg!(&headers);
-            dbg!(dbg_headers);
+            dbg!(&dbg_headers);
+
+            dbg_headers.insert(
+                "Content-Type",
+                HeaderValue::from_static("text/html; charset=windows-1252"),
+            );
 
             let text = resp.text().await?;
-            dbg!(&text);
+        
             
 
             Ok(Response {
