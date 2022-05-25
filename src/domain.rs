@@ -635,18 +635,7 @@ where
 
         let (status, url, headers) = response_info(&mut resp);
 
-        // debug
-        let dbg_headers = resp.headers_mut();
-        dbg!("domain");
-        dbg!(&headers);
-        dbg!(&dbg_headers);
-        dbg_headers.insert(
-            "Content-Type",
-            HeaderValue::from_static("text/html; charset=windows-1252"),
-        );
-
         let text = resp.text().await?;
-        dbg!(&text);
 
         Ok(Response {
             depth,

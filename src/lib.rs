@@ -375,22 +375,8 @@ where
         let fut = Box::pin(async move {
             let (mut resp, state) = fut.await?;
             let (status, url, headers) = response_info(&mut resp);
-
-            // debug
-            let dbg_headers = resp.headers_mut();
-            dbg!("lib");
-            dbg!(&headers);
-            dbg!(&dbg_headers);
-
-            dbg_headers.insert(
-                "Content-Type",
-                HeaderValue::from_static("text/html; charset=windows-1252"),
-            );
-
             let text = resp.text().await?;
         
-            
-
             Ok(Response {
                 depth,
                 // Note: There is no way to determine the original url since only the response is
