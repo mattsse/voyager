@@ -269,7 +269,7 @@ pub struct Crawler<T: Scraper> {
     in_progress_crawl_requests: Vec<CrawlRequest<T::State>>,
     queued_results: VecDeque<CrawlResult<T>>,
     /// The client that issues all the requests
-    client: reqwest::Client,
+    client: reqwest_middleware::ClientWithMiddleware,
     /// used to track the depth of submitted requests
     current_depth: usize,
     /// Either a list that only allows a set of domains or disallows a set of
@@ -289,7 +289,9 @@ pub struct Crawler<T: Scraper> {
 impl<T: Scraper> Crawler<T> {
     /// Create a new crawler following the config
     pub fn new(config: CrawlerConfig) -> Self {
-        let client = config.client.unwrap_or_default();
+        let client = config
+            .client
+            .unwrap_or(reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build());
 
         let list = if config.allowed_domains.is_empty() {
             let block_list = BlockList::new(
@@ -364,7 +366,7 @@ where
     /// the scraper again
     pub fn crawl<TCrawlFunction, TCrawlFuture>(&mut self, fun: TCrawlFunction)
     where
-        TCrawlFunction: FnOnce(&reqwest::Client) -> TCrawlFuture,
+        TCrawlFunction: FnOnce(&reqwest_middleware::ClientWithMiddleware) -> TCrawlFuture,
         TCrawlFuture: Future<Output = Result<(reqwest::Response, Option<T::State>)>> + 'static,
     {
         let depth = self.current_depth + 1;
@@ -394,7 +396,7 @@ where
     /// returned once finished.
     pub fn complete<TCrawlFunction, TCrawlFuture>(&mut self, fun: TCrawlFunction)
     where
-        TCrawlFunction: FnOnce(&reqwest::Client) -> TCrawlFuture,
+        TCrawlFunction: FnOnce(&reqwest_middleware::ClientWithMiddleware) -> TCrawlFuture,
         TCrawlFuture: Future<Output = Result<Option<T::Output>>> + 'static,
     {
         let fut = (fun)(&self.client);
@@ -412,16 +414,20 @@ where
     }
 
     /// This queues in a whole request with no state attached
-    pub fn request(&mut self, req: reqwest::RequestBuilder) {
+    pub fn request(&mut self, req: reqwest_middleware::RequestBuilder) {
         self.queue_request(req, None)
     }
 
     /// This queues in a whole request with a state attached
-    pub fn request_with_state(&mut self, req: reqwest::RequestBuilder, state: T::State) {
+    pub fn request_with_state(&mut self, req: reqwest_middleware::RequestBuilder, state: T::State) {
         self.queue_request(req, Some(state))
     }
 
-    fn queue_request(&mut self, request: reqwest::RequestBuilder, state: Option<T::State>) {
+    fn queue_request(
+        &mut self,
+        request: reqwest_middleware::RequestBuilder,
+        state: Option<T::State>,
+    ) {
         let req = QueuedRequestBuilder {
             request,
             state,
@@ -434,7 +440,7 @@ where
     }
 
     /// The client that performs all request
-    pub fn client(&self) -> &reqwest::Client {
+    pub fn client(&self) -> &reqwest_middleware::ClientWithMiddleware {
         &self.client
     }
 
@@ -570,7 +576,7 @@ pub struct CrawlerConfig {
     // /// Delay a request
     // request_delay: Option<RequestDelay>,
     /// The client that will be used to send the requests
-    client: Option<reqwest::Client>,
+    client: Option<reqwest_middleware::ClientWithMiddleware>,
 }
 
 impl Default for CrawlerConfig {
@@ -605,18 +611,21 @@ impl CrawlerConfig {
         self
     }
 
-    pub fn set_client(mut self, client: reqwest::Client) -> Self {
+    pub fn set_client(mut self, client: reqwest_middleware::ClientWithMiddleware) -> Self {
         self.client = Some(client);
         self
     }
 
-    /// *NOTE* [`reqwest::Client`] already uses Arc under the hood, so
+    /// *NOTE* [`reqwest_middleware::ClientWithMiddleware`] already uses Arc under the hood, so
     /// it's preferable to just `clone` it and pass via [`Self::set_client`]
     #[deprecated(
         since = "0.2.0",
         note = "You do not have to wrap the Client it in a `Arc` to reuse it, because it already uses an `Arc` internally. Users should use `set_client` instead."
     )]
-    pub fn with_shared_client(mut self, client: std::sync::Arc<reqwest::Client>) -> Self {
+    pub fn with_shared_client(
+        mut self,
+        client: std::sync::Arc<reqwest_middleware::ClientWithMiddleware>,
+    ) -> Self {
         self.client = Some(client.as_ref().clone());
         self
     }

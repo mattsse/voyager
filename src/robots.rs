@@ -262,7 +262,7 @@ Disallow: /",
         let data = handler.finish();
         assert_eq!(data.groups.len(), 1);
 
-        let client = reqwest::Client::new();
+        let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
         let request = client
             .request(reqwest::Method::GET, "https://old.reddit.com/r/rust")
             .build()
@@ -276,7 +276,7 @@ Disallow: /",
         parse_robotstxt("", &mut handler);
         let data = handler.finish();
 
-        let client = reqwest::Client::new();
+        let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
         let request = client
             .request(reqwest::Method::GET, "https://old.reddit.com/r/rust")
             .build()
@@ -294,7 +294,7 @@ Disallow: /r/rust",
         );
         let data = handler.finish();
 
-        let client = reqwest::Client::new();
+        let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
         let request = client
             .request(reqwest::Method::GET, "https://old.reddit.com/r/crust")
             .build()

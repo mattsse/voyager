@@ -17,7 +17,7 @@ pub struct QueuedRequest<T> {
 
 /// A request that is waiting to be build
 pub struct QueuedRequestBuilder<T> {
-    pub request: reqwest::RequestBuilder,
+    pub request: reqwest_middleware::RequestBuilder,
     pub state: Option<T>,
     pub depth: usize,
 }

@@ -190,7 +190,7 @@ type CrawlRequest<T> = Pin<Box<dyn Future<Output = Result<Response<T>>>>>;
 type RobotsTxtRequest = Pin<Box<dyn Future<Output = Result<RobotsData>>>>;
 
 pub struct AllowedDomain<T> {
-    client: reqwest::Client,
+    client: Box<reqwest_middleware::ClientWithMiddleware>,
     /// Futures that eventually return a http response that is passed to the
     /// scraper
     in_progress_crawl_requests: Vec<CrawlRequest<T>>,
@@ -218,7 +218,7 @@ pub struct AllowedDomain<T> {
 impl<T: fmt::Debug> AllowedDomain<T> {
     pub fn new(config: AllowListConfig) -> Self {
         Self {
-            client: config.client,
+            client: Box::new(config.client),
             in_progress_crawl_requests: Vec::new(),
             in_progress_robots_txt_crawls: None,
             request_queue: config
@@ -332,7 +332,7 @@ where
             {
                 // respect robots.txt
                 let mut fut = Box::pin(get_response(
-                    &pin.client,
+                    pin.client.clone(),
                     req,
                     pin.skip_non_successful_responses,
                 ));
@@ -381,14 +381,14 @@ where
 pub struct AllowListConfig {
     pub delay: Option<RequestDelay>,
     pub respect_robots_txt: bool,
-    pub client: reqwest::Client,
+    pub client: reqwest_middleware::ClientWithMiddleware,
     pub skip_non_successful_responses: bool,
     pub max_depth: usize,
     pub max_requests: usize,
 }
 
 pub struct BlockList<T> {
-    client: reqwest::Client,
+    client: Box<reqwest_middleware::ClientWithMiddleware>,
     /// list of domains that are blocked
     blocked_domains: HashSet<String>,
     /// Futures that eventually return a http response that is passed to the
@@ -416,14 +416,14 @@ pub struct BlockList<T> {
 impl<T> BlockList<T> {
     pub fn new(
         blocked_domains: HashSet<String>,
-        client: reqwest::Client,
+        client: reqwest_middleware::ClientWithMiddleware,
         respect_robots_txt: bool,
         skip_non_successful_responses: bool,
         max_depth: usize,
         max_requests: usize,
     ) -> Self {
         BlockList {
-            client,
+            client: Box::new(client),
             blocked_domains,
             in_progress_crawl_requests: Vec::new(),
             robots_map: Default::default(),
@@ -534,7 +534,7 @@ where
                         if let Some(robots) = pin.robots_map.get(host) {
                             if robots.is_not_disallowed(&req.request) {
                                 let fut = Box::pin(get_response(
-                                    &pin.client,
+                                    pin.client.clone(),
                                     req,
                                     pin.skip_non_successful_responses,
                                 ));
@@ -572,7 +572,7 @@ where
                     }
                 } else {
                     let fut = Box::pin(get_response(
-                        &pin.client,
+                        pin.client.clone(),
                         req,
                         pin.skip_non_successful_responses,
                     ));
@@ -603,7 +603,7 @@ where
 }
 
 fn get_response<T>(
-    client: &reqwest::Client,
+    client: Box<reqwest_middleware::ClientWithMiddleware>,
     request: QueuedRequest<T>,
     skip_non_successful_responses: bool,
 ) -> CrawlRequest<T>
@@ -618,9 +618,8 @@ where
     let request_url = request.url().clone();
     let skip_http_error_response = skip_non_successful_responses;
 
-    let request = client.execute(request);
-
     Box::pin(async move {
+        let request = client.execute(request);
         let mut resp = request.await?;
 
         if !resp.status().is_success() && skip_http_error_response {
