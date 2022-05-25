@@ -374,6 +374,13 @@ where
         let fut = Box::pin(async move {
             let (mut resp, state) = fut.await?;
             let (status, url, headers) = response_info(&mut resp);
+
+            // debug
+            let dbg_headers = resp.headers();
+            dbg!("lib");
+            dbg!(&headers);
+            dbg!(dbg_headers);
+
             let text = resp.text().await?;
 
             Ok(Response {

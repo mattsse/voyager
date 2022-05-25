@@ -634,6 +634,12 @@ where
 
         let (status, url, headers) = response_info(&mut resp);
 
+        // debug
+        let dbg_headers = resp.headers();
+        dbg!("domain");
+        dbg!(&headers);
+        dbg!(dbg_headers);
+        
         let text = resp.text().await?;
 
         Ok(Response {

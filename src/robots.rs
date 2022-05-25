@@ -22,6 +22,9 @@ impl RobotsHandler {
         let status_code = resp.status().as_u16();
 
         if (200..300).contains(&status_code) {
+            let dbg_headers = resp.headers();
+            dbg!("robots");
+            dbg!(dbg_headers);
             let txt = resp.text().await?;
             let mut handler = RobotsHandler::default();
             parse_robotstxt(&txt, &mut handler);
