@@ -640,7 +640,7 @@ where
         dbg!(&headers);
         dbg!(dbg_headers);
 
-        let text = resp.text_with_charset("").await?;
+        let text = resp.text().await?;
 
         Ok(Response {
             depth,
