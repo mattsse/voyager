@@ -191,7 +191,7 @@ type CrawlRequest<T> = Pin<Box<dyn Future<Output = Result<Response<T>>>>>;
 type RobotsTxtRequest = Pin<Box<dyn Future<Output = Result<RobotsData>>>>;
 
 pub struct AllowedDomain<T> {
-    client: Box<reqwest_middleware::ClientWithMiddleware>,
+    client: reqwest_middleware::ClientWithMiddleware,
     /// Futures that eventually return a http response that is passed to the
     /// scraper
     in_progress_crawl_requests: Vec<CrawlRequest<T>>,
@@ -219,7 +219,7 @@ pub struct AllowedDomain<T> {
 impl<T: fmt::Debug> AllowedDomain<T> {
     pub fn new(config: AllowListConfig) -> Self {
         Self {
-            client: Box::new(config.client),
+            client: config.client,
             in_progress_crawl_requests: Vec::new(),
             in_progress_robots_txt_crawls: None,
             request_queue: config
@@ -389,7 +389,7 @@ pub struct AllowListConfig {
 }
 
 pub struct BlockList<T> {
-    client: Box<reqwest_middleware::ClientWithMiddleware>,
+    client: reqwest_middleware::ClientWithMiddleware,
     /// list of domains that are blocked
     blocked_domains: HashSet<String>,
     /// Futures that eventually return a http response that is passed to the
@@ -424,7 +424,7 @@ impl<T> BlockList<T> {
         max_requests: usize,
     ) -> Self {
         BlockList {
-            client: Box::new(client),
+            client,
             blocked_domains,
             in_progress_crawl_requests: Vec::new(),
             robots_map: Default::default(),
@@ -604,7 +604,7 @@ where
 }
 
 fn get_response<T>(
-    client: Box<reqwest_middleware::ClientWithMiddleware>,
+    client: reqwest_middleware::ClientWithMiddleware,
     request: QueuedRequest<T>,
     skip_non_successful_responses: bool,
 ) -> CrawlRequest<T>
