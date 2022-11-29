@@ -6,7 +6,9 @@ use robotstxt::{get_path_params_query, parse_robotstxt, RobotsParseHandler};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-/// The handler that parses the `robots.txt` into a `RobotsData`
+/// The handler that parses the `robots.txt` into a `RobotsData`.
+///
+/// See [robotstxt] docs.
 #[derive(Debug, Clone, Default)]
 pub struct RobotsHandler {
     // list of groups with all their user_agents
@@ -18,6 +20,7 @@ pub struct RobotsHandler {
 }
 
 impl RobotsHandler {
+    /// Parses a response to get the [robots](RobotsData) information from robots.txt.
     pub async fn from_response(resp: reqwest::Response) -> Result<RobotsData> {
         let status_code = resp.status().as_u16();
 
@@ -49,6 +52,10 @@ impl RobotsHandler {
         Err(UnexpectedStatusError::new(status_code).into())
     }
 
+    /// Adds the most recently processed group to the list of robot groups.
+    ///
+    /// Note: This does not reset `self.group`, so calling this twice will add
+    /// duplicates of the same group.
     fn finish_group(&mut self) {
         if let Some(group) = self.group.take() {
             self.groups
@@ -56,6 +63,10 @@ impl RobotsHandler {
         }
     }
 
+    /// Creates the [RobotsData] from the list of processed groups.
+    ///
+    /// This function computes, for each user agent, the list of all groups they
+    /// are a part of.
     pub fn finish(self) -> RobotsData {
         let mut groups = Vec::with_capacity(self.groups.len());
         let mut group_agents =
@@ -130,7 +141,7 @@ impl RobotsParseHandler for RobotsHandler {
 pub struct RobotsData {
     /// All the groups in the `robots.txt`
     pub groups: Vec<Group>,
-    /// Mapping of all user-agents to all their groups
+    /// Mapping of all user-agents to all the groups they are in
     pub group_agents: HashMap<String, Vec<usize>>,
     /// Whether to allow all url patterns for all user agents
     pub allow_all: bool,

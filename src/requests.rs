@@ -8,26 +8,36 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-/// A request that is waiting to be send
+/// A [Request](reqwest::Request) that is waiting to be sent.
 pub struct QueuedRequest<T> {
+    /// The request to send.
     pub request: reqwest::Request,
+    /// The requested state to use when crawling.
     pub state: Option<T>,
+    /// How many links the crawler visited before it queued this request.
     pub depth: usize,
 }
 
-/// A request that is waiting to be build
+/// Builder for [QueuedRequest].
 pub struct QueuedRequestBuilder<T> {
+    /// The request to send.
     pub request: reqwest::RequestBuilder,
+    /// The requested state to use when crawling.
     pub state: Option<T>,
+    /// How many links the crawler visited before it queued this request.
     pub depth: usize,
 }
 
+/// Queue containing the list of requests left to crawl.
+///
+/// This queue does not dedupe requests.
 pub struct RequestQueue<T> {
     delay: Option<(Delay, RequestDelay)>,
     queued_requests: VecDeque<QueuedRequest<T>>,
 }
 
 impl<T> RequestQueue<T> {
+    /// Creates a new [RequestQueue] with the given delay.
     pub fn with_delay(delay: RequestDelay) -> Self {
         Self {
             delay: Some((Delay::new(Duration::default()), delay)),
@@ -39,12 +49,14 @@ impl<T> RequestQueue<T> {
         &mut self.queued_requests
     }
 
-    /// Remove the underlying delay
+    /// Removes the crawl delay.
+    ///
+    /// Requests will be crawled immediately where possible.
     pub fn remove_delay(&mut self) -> Option<RequestDelay> {
         self.delay.take().map(|(_, d)| d)
     }
 
-    /// Set a delay to be applied between requests
+    /// Set a delay to be applied between requests.
     pub fn set_delay(&mut self, mut delay: RequestDelay) -> Option<RequestDelay> {
         if let Some((_, d)) = self.delay.as_mut() {
             std::mem::swap(&mut delay, d);
@@ -128,6 +140,11 @@ impl RequestDelay {
         RequestDelay::Random { min, max }
     }
 
+    /// Computes the next [Duration] of delay that the [RequestQueue] should take.
+    ///
+    /// For [Fixed](RequestDelay::Fixed) delays, this will return the fixed value.
+    ///
+    /// For [Random](RequestDelay::Random) delays, it will choose a new random number.
     pub fn next_delay(&self) -> Duration {
         use rand::Rng;
 
@@ -140,6 +157,10 @@ impl RequestDelay {
     }
 }
 
+/// Returns a tuple containing information about the [Response](reqwest::Response).
+///
+/// This helps callers avoid accidentally moving the [Response](reqwest::Response)
+/// when reading its sub-fields.
 pub(crate) fn response_info(resp: &mut reqwest::Response) -> (StatusCode, Url, HeaderMap) {
     let mut headers = HeaderMap::new();
     std::mem::swap(&mut headers, resp.headers_mut());
