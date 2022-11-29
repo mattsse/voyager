@@ -21,7 +21,7 @@ pub struct Response<T> {
 }
 
 impl<T> Response<T> {
-    /// Returns the parsed Html document
+    /// Returns the parsed [Html] document
     pub fn html(&self) -> Html {
         Html::parse_document(&self.text)
     }
