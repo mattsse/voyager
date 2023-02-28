@@ -168,8 +168,8 @@ pub use domain::{AllowList, AllowListConfig, BlockList, DomainListing};
 /// Reexport all the scraper types
 pub use scraper;
 
-/// Collector controls the `Crawler` and forwards the successful requests to the
-/// `Scraper`. and reports the `Scraper`'s `Output` back to the user.
+/// Collector controls the [`Crawler`] and forwards the successful requests to the
+/// [`Scraper`]. and reports the `Scraper`'s `Output` back to the user.
 #[must_use = "Collector does nothing until polled."]
 pub struct Collector<T: Scraper> {
     /// The crawler that requests all the pages
@@ -183,7 +183,7 @@ where
     T: Scraper,
     <T as Scraper>::State: fmt::Debug,
 {
-    /// Create a new `Collector` that uses the `scraper` for content extraction
+    /// Create a new [`Collector`] that uses the `scraper` for content extraction
     pub fn new(scraper: T, config: CrawlerConfig) -> Self {
         Self {
             crawler: Crawler::new(config),
@@ -261,7 +261,7 @@ where
 type OutputRequest<T> = Pin<Box<dyn Future<Output = Result<Option<T>>>>>;
 type CrawlRequest<T> = Pin<Box<dyn Future<Output = Result<Response<T>>>>>;
 /// The crawler that is responsible for driving the requests to completion and
-/// providing the crawl response for the `Scraper`.
+/// providing the crawl response for the [`Scraper`].
 pub struct Crawler<T: Scraper> {
     /// Futures that eventually result in `T::Output` and are piped directly to
     /// caller
@@ -364,7 +364,10 @@ where
     <T as Scraper>::Output: Unpin,
 {
     /// Send a crawling request whose html response and context is returned to
-    /// the scraper again
+    /// the scraper again.
+    ///
+    /// This crawls pages using breadth-first search and does not filter out duplicate
+    /// URLs.
     pub fn crawl<TCrawlFunction, TCrawlFuture>(&mut self, fun: TCrawlFunction)
     where
         TCrawlFunction: FnOnce(&reqwest_middleware::ClientWithMiddleware) -> TCrawlFuture,
@@ -446,7 +449,7 @@ where
         &self.client
     }
 
-    /// advance all requests
+    /// Advances all requests
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Option<CrawlResult<T>>> {
         loop {
             // drain all results
@@ -515,7 +518,7 @@ where
     }
 }
 
-/// The result type a `Crawler` produces
+/// The result from a [`Crawler::crawl()`] operation.
 enum CrawlResult<T: Scraper> {
     /// A submitted request to produce the `Scraper::Output` type has finished
     Finished(Result<T::Output>),
@@ -534,13 +537,13 @@ pub trait Scraper: Sized {
     /// several consecutive request.
     type State: fmt::Debug;
 
-    /// Is called after the `Crawler` successfully receives a response for an
+    /// Is called after the [`Crawler`] successfully receives a response for an
     /// issued request.
     ///
-    /// This function can return a finished `Output` object.
+    /// This function can return a finished [`Output`](Scraper::Output) object.
     /// The crawler accepts additional requests. To advance the scraper's
-    /// `State`, pass the state of the `response` along with the request to the
-    /// `Crawler`.
+    /// [`State`](Scraper::State), pass the state of the `response` along with the request to the
+    /// [`Crawler`].
     fn scrape(
         &mut self,
         response: Response<Self::State>,
@@ -557,16 +560,16 @@ pub struct Stats {
     pub response_count: usize,
 }
 
-/// Configure a `Collector` and its `Crawler`
+/// Configure a [`Collector`] and its [`Crawler`]
 pub struct CrawlerConfig {
     /// Limits the recursion depth of visited URLs.
     max_depth: Option<usize>,
     /// Limits request to execute concurrently.
     ///
-    /// Default is `MAX_CONCURRENT_REQUESTS`
+    /// Default is [`CrawlerConfig::MAX_CONCURRENT_REQUESTS`]
     max_requests: Option<usize>,
     /// Whether to ignore responses with a non 2xx response code see
-    /// `reqwest::Response::is_success`
+    /// [`reqwest::Response::is_success()`]
     skip_non_successful_responses: bool,
     /// Domain whitelist, if empty any domains are allowed to visit
     allowed_domains: HashMap<String, Option<RequestDelay>>,
@@ -596,7 +599,7 @@ impl Default for CrawlerConfig {
 }
 
 impl CrawlerConfig {
-    const MAX_CONCURRENT_REQUESTS: usize = 1_00;
+    const MAX_CONCURRENT_REQUESTS: usize = 100;
 
     pub fn max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = Some(max_depth);
