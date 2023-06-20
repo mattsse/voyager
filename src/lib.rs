@@ -301,6 +301,7 @@ impl<T: Scraper> Crawler<T> {
                 config
                     .max_requests
                     .unwrap_or(CrawlerConfig::MAX_CONCURRENT_REQUESTS),
+                config.request_delay,
             );
             DomainListing::BlockList(block_list)
         } else {
@@ -567,6 +568,8 @@ pub struct CrawlerConfig {
     allowed_domains: HashMap<String, Option<RequestDelay>>,
     /// Domain blacklist
     disallowed_domains: HashSet<String>,
+    /// Default request delay, only applied when using `disallowed_domains`
+    request_delay: Option<RequestDelay>,
     /// respects the any restrictions set by the target host's
     /// robots.txt file. See <http://www.robotstxt.org/>` for more information.
     respect_robots_txt: bool,
@@ -584,6 +587,7 @@ impl Default for CrawlerConfig {
             skip_non_successful_responses: true,
             allowed_domains: Default::default(),
             disallowed_domains: Default::default(),
+            request_delay: Default::default(),
             respect_robots_txt: false,
             client: None,
         }
@@ -673,6 +677,11 @@ impl CrawlerConfig {
         for (domain, delay) in domains.into_iter() {
             self.allowed_domains.insert(domain.into(), Some(delay));
         }
+        self
+    }
+
+    pub fn set_delay(mut self, request_delay: RequestDelay) -> Self {
+        self.request_delay = Some(request_delay);
         self
     }
 

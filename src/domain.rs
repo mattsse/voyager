@@ -421,7 +421,11 @@ impl<T> BlockList<T> {
         skip_non_successful_responses: bool,
         max_depth: usize,
         max_requests: usize,
+        request_delay: Option<RequestDelay>,
     ) -> Self {
+        let request_queue = request_delay
+            .map(RequestQueue::with_delay)
+            .unwrap_or_default();
         BlockList {
             client,
             blocked_domains,
@@ -431,7 +435,7 @@ impl<T> BlockList<T> {
             in_progress_robots_txt_crawl_hosts: Default::default(),
             respect_robots_txt,
             skip_non_successful_responses,
-            request_queue: Default::default(),
+            request_queue,
             max_depth,
             max_requests,
         }
