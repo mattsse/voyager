@@ -59,6 +59,7 @@ impl<T> RequestQueue<T> {
     /// Set a delay to be applied between requests.
     pub fn set_delay(&mut self, mut delay: RequestDelay) -> Option<RequestDelay> {
         if let Some((_, d)) = self.delay.as_mut() {
+            //TODO: take a look. decide if this swap is necessary
             std::mem::swap(&mut delay, d);
             Some(delay)
         } else {
@@ -162,7 +163,5 @@ impl RequestDelay {
 /// This helps callers avoid accidentally moving the [Response](reqwest::Response)
 /// when reading its sub-fields.
 pub(crate) fn response_info(resp: &mut reqwest::Response) -> (StatusCode, Url, HeaderMap) {
-    let mut headers = HeaderMap::new();
-    std::mem::swap(&mut headers, resp.headers_mut());
-    (resp.status(), resp.url().clone(), headers)
+    (resp.status(), resp.url().clone(), resp.headers_mut().clone())
 }
