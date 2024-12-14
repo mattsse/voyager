@@ -12,15 +12,15 @@ keywords = ["scraping", "crawling", "html"]
 categories = ["web-programming"]
 
 [dependencies]
-html5ever = "0.25"
-scraper = "0.12"
-reqwest = { version = "0.11", default-features = false }
+html5ever = "0.29"
+scraper = "0.22"
+reqwest = { version = "0.12", default-features = false }
 futures = "0.3"
 rand = "0.8"
 anyhow = "1.0"
-tokio = { version = "1.15", features = ["full"], optional = true }
+tokio = { version = "1.42", features = ["full"], optional = true }
 futures-timer = "3.0"
-thiserror = "1.0"
+thiserror = "2.0"
 robotstxt = "0.3"
 
 [[example]]
